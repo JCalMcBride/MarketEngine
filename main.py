@@ -4,7 +4,6 @@ import configparser
 import json
 import logging
 import os
-import re
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
@@ -103,7 +102,7 @@ async def process_price_history(session, cache, items: List[Dict[str, Any]], tra
                 price_history_day["item_id"] = item_ids[item_name]
 
                 if 'order_type' not in price_history_day:
-                    price_history_day['order_type'] = 'closed'
+                    price_history_day['order_type'] = 'Closed'
 
                 price_history_dict[date][item_name].append(price_history_day)
 
@@ -148,6 +147,10 @@ def insert_item_statistics(data_list, connection):
     """
 
     # Create a list of values for each dictionary, using None for missing keys
+    for data in data_list:
+        if 'order_type' not in data:
+            data['order_type'] = 'Closed'
+
     values = [tuple(data.get(key, None) for key in all_columns) for data in data_list]
 
     batch_size = 10_000
@@ -230,107 +233,11 @@ def save_items(items, item_ids, connection):
     connection.commit()
 
 
-def get_wfm_item_categorized(wfm_item_data, type_dict, sub_type_data):
-    overrides = {
-        'Prisma Dual Decurions': 'Prisma Dual Decurion'
-    }
-
-    manual_categories = {
-        'Scan Aquatic Lifeforms': 'Mods',
-        "Kavasa Prime Kubrow Collar Blueprint": "Misc",
-        'Equilibrium (Steam Pinnacle Pack)': 'CollectorItems',
-        'Corpus Void Key': 'CollectorItems',
-        'Vay Hek Frequency Triangulator': 'CollectorItems',
-        'Ancient Fusion Core': 'CollectorItems',
-        'Delta Beacon': 'CollectorItems',
-        'Gamma Beacon': 'CollectorItems',
-        'Kappa Beacon': 'CollectorItems',
-        'Omega Beacon': 'CollectorItems'
-    }
-
-    wfm_item_data_lower = {k.lower(): k for k, v in wfm_item_data.items()}
-
-    armor_types = ['Chest Plate', 'Arm Spurs', 'Arm Plates', 'Leg Spurs', 'Arm Guards', 'Leg Guards',
-                   'Chest Marker', 'Knee Guards', 'Chest Piece', 'Spurs', 'Chest Guard', "Arm Insignia"]
-
-    all_items = []
-    wfm_items_categorized = {k: {} for k in list(type_dict) + ['ArcaneHelmets', 'Imprints', 'VeiledRivenMods', 'Emotes',
-                                                               'ArmorPieces', "CollectorItems"]}
-
-    for item_type in type_dict:
-        for item in type_dict[item_type]:
-            if item in overrides:
-                item = overrides[item]
-
-            if item in manual_categories:
-                continue
-
-            if item.lower() in wfm_item_data_lower:
-                wfm_caps = wfm_item_data_lower[item.lower()]
-                all_items.append(wfm_caps)
-
-                if item_type == "Resources":
-                    wfm_items_categorized["Misc"][wfm_caps] = wfm_item_data[wfm_caps]
-                    if wfm_caps in sub_type_data:
-                        for sub_type in sub_type_data[wfm_caps]:
-                            wfm_items_categorized["Misc"][f"{wfm_caps} {sub_type}"] = wfm_item_data[wfm_caps]
-                    continue
-
-                wfm_items_categorized[item_type][wfm_caps] = wfm_item_data[wfm_caps]
-
-                if wfm_caps in sub_type_data:
-                    for sub_type in sub_type_data[wfm_caps]:
-                        wfm_items_categorized[item_type][f"{wfm_caps} {sub_type}"] = wfm_item_data[wfm_caps]
-            else:
-                all_items.append(item)
-
-    for item in manual_categories:
-        wfm_items_categorized[manual_categories[item]][item] = wfm_item_data[item]
-        all_items.append(item)
-
-    for item in (set(wfm_item_data.keys()) - set(all_items)):
-        if re.match(r".*Set", item):
-            base_item = item.split(" Set")[0]
-
-            for item_type in type_dict:
-                if base_item in type_dict[item_type]:
-                    wfm_items_categorized[item_type][item] = wfm_item_data[item]
-        elif re.match(r"Arcane.*Helmet", item):
-            wfm_items_categorized['ArcaneHelmets'][item] = wfm_item_data[item]
-        elif re.match(r".*Imprint", item):
-            wfm_items_categorized['Imprints'][item] = wfm_item_data[item]
-        elif re.match(r".*Augment Mod", item):
-            wfm_items_categorized['Mods'][item] = wfm_item_data[item]
-        elif re.match(r".*(Veiled)", item):
-            wfm_items_categorized['VeiledRivenMods'][item] = wfm_item_data[item]
-            if item in sub_type_data:
-                for sub_type in sub_type_data[item]:
-                    wfm_items_categorized['VeiledRivenMods'][f"{item} {sub_type}"] = wfm_item_data[item]
-        elif re.match(r".*Emote", item):
-            wfm_items_categorized['Emotes'][item] = wfm_item_data[item]
-        elif any(x in item for x in armor_types):
-            wfm_items_categorized['ArmorPieces'][item] = wfm_item_data[item]
-        else:
-            wfm_items_categorized['Misc'][item] = wfm_item_data[item]
-
-    for item_type in list(wfm_items_categorized):
-        if len(wfm_items_categorized[item_type]) == 0:
-            del wfm_items_categorized[item_type]
-            continue
-
-        wfm_items_categorized[item_type] = dict(sorted(wfm_items_categorized[item_type].items()))
-
-    wfm_items_categorized = dict(sorted(wfm_items_categorized.items()))
-
-    return wfm_items_categorized
-
-
 def get_sub_type_data(connection):
     with connection.cursor() as cursor:
         cursor.execute("""SELECT i.item_name, GROUP_CONCAT(DISTINCT s.sub_type) as subtypes
                           FROM item_subtypes s
                           JOIN items i ON s.item_id = i.id
-                          WHERE s.sub_type IS NOT NULL
                           GROUP BY i.item_name""")
         sub_type_data = cursor.fetchall()
 
@@ -342,20 +249,29 @@ def get_mod_rank_data(connection):
         cursor.execute("""SELECT i.item_name, GROUP_CONCAT(DISTINCT s.mod_rank) as modrank
                           FROM item_mod_ranks s
                           JOIN items i ON s.item_id = i.id
-                          WHERE s.mod_rank IS NOT NULL
                           GROUP BY i.item_name""")
         sub_type_data = cursor.fetchall()
 
         return {row[0]: row[1].split(',') for row in sub_type_data}
 
 
+def get_item_data(connection):
+    with connection.cursor() as cursor:
+        cursor.execute("""SELECT item_name, id FROM items""")
+
+    return dict(cursor.fetchall())
+
+
 def build_category_info(connection):
     manifest_list = categories.get_manifest()
     wf_parser = categories.build_parser(manifest_list)
-    type_dict = categories.gen_type_dict(manifest_list, wf_parser)
-    mod_ranks = get_mod_rank_data(connection)
-    subtypes = get_sub_type_data(connection)
-    get_wfm_item_categorized(type_dict, mod_ranks, subtypes)
+    item_categories = categories.get_wfm_item_categorized(get_item_data(connection), manifest_list, wf_parser)
+
+    query = """UPDATE items SET item_type = %s WHERE id = %s"""
+
+    with connection.cursor() as cursor:
+        for item_type in item_categories:
+            cursor.executemany(query, [(item_type, item_id) for item_id in item_categories[item_type].values()])
 
 
 def save_sub_type_data(connection):
@@ -381,6 +297,7 @@ def build_item_ids(items, translation_dict):
         item_ids[item['item_name']] = item['id']
 
     for file in os.listdir('output'):
+        logger.info(f"Processing {file}")
         history_file = None
         with open(os.path.join('output', file), 'r') as f:
             history_file = json.load(f)
@@ -435,9 +352,8 @@ async def main(args):
 
     insert_item_statistics(data_list, cnx)
 
-    build_category_info(cnx)
-
     if not args.database:
+        build_category_info(cnx)
         save_sub_type_data(cnx)
         save_mod_type_data(cnx)
 

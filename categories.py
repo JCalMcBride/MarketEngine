@@ -5,18 +5,121 @@ from json import JSONDecodeError
 
 import requests
 
+ADDITIONAL_CATEGORIES = ['ArcaneHelmets', 'Imprints', 'VeiledRivenMods', 'Emotes',
+                         'ArmorPieces', "CollectorItems"]
+
+OVERRIDES = {
+    'Prisma Dual Decurions': 'Prisma Dual Decurion'
+}
+
+MANUAL_CATEGORIES = {
+    'Scan Aquatic Lifeforms': 'Mods',
+    "Kavasa Prime Kubrow Collar Blueprint": "Misc",
+    'Equilibrium (Steam Pinnacle Pack)': 'CollectorItems',
+    'Corpus Void Key': 'CollectorItems',
+    'Vay Hek Frequency Triangulator': 'CollectorItems',
+    'Ancient Fusion Core': 'CollectorItems',
+    'Delta Beacon': 'CollectorItems',
+    'Gamma Beacon': 'CollectorItems',
+    'Kappa Beacon': 'CollectorItems',
+    'Omega Beacon': 'CollectorItems',
+    'Damaged Necramech Set': 'Misc',
+    'Damaged Necramech Weapon Set': 'Misc',
+    'Suda Armor Set': 'ArmorPieces',
+    'Lokan Armor Set': 'ArmorPieces',
+    'Red Veil Armor Set': 'ArmorPieces',
+    'Solaris Armor Set': 'ArmorPieces',
+    'Meridian Armor Set': 'ArmorPieces',
+    'Perrin Armor Set': 'ArmorPieces',
+    'Ostron Armor Set': 'ArmorPieces',
+    'Hexis Armor Set': 'ArmorPieces',
+    'Kavasa Prime Kubrow Collar Set': 'Misc'
+}
+
+ARMOR_TYPES = [
+    'Chest Plate', 'Arm Spurs', 'Arm Plates', 'Leg Spurs', 'Arm Guards', 'Leg Guards',
+    'Chest Marker', 'Knee Guards', 'Chest Piece', 'Spurs', 'Chest Guard', "Arm Insignia"
+]
+
+CATEGORY_MAPPINGS = [
+    (re.compile(r"Arcane.*Helmet"), 'ArcaneHelmets'),
+    (re.compile(r".*Imprint"), 'Imprints'),
+    (re.compile(r".*Augment Mod"), 'Mods'),
+    (re.compile(r".*(Veiled)"), 'VeiledRivenMods'),
+    (re.compile(r".*Emote"), 'Emotes'),
+    (re.compile("|".join(ARMOR_TYPES)), 'ArmorPieces'),
+    (re.compile(r"(.*) Set"), lambda match, d: d.get(match.group(1))),
+]
+
+def find_category(item, flattened_type_dict):
+    # Check if the item is in MANUAL_CATEGORIES
+    if item in MANUAL_CATEGORIES:
+        return MANUAL_CATEGORIES[item]
+
+    # Returns the next item in the iterable that evaluates to True
+    # If no item evaluates to True, returns 'Misc'
+    # Uses CATEGORY_MAPPINGS to determine the category
+    # If the item matches a regex pattern, the category is returned
+    # If item is a set, find category the base item belongs to
+    # Otherwise, returns 'Misc'.
+    match, category = next(((pattern.match(item), category)
+                            for pattern, category
+                            in CATEGORY_MAPPINGS
+                            if pattern.match(item)),
+                           (None, 'Misc'))
+    return category(match, flattened_type_dict) if callable(category) else category
+
+
+def process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_categorized, all_items, overrides, manual_categories):
+    if item in overrides:
+        item = overrides[item]
+
+    if item in manual_categories:
+        return
+
+    original_item_name = wfm_item_data_lower.get(item.lower())
+
+    if original_item_name:
+        all_items.add(original_item_name)
+        wfm_items_categorized[item_type][original_item_name] = wfm_item_data[original_item_name]
+    else:
+        all_items.add(item)
+
+
+def get_wfm_item_categorized(wfm_item_data, manifest_list, wf_parser):
+    type_dict = gen_type_dict(manifest_list, wf_parser)
+    wfm_item_data_lower = {k.lower(): k for k, v in wfm_item_data.items()}
+    all_items = set()
+
+    wfm_items_categorized = {k: {} for k in list(type_dict) + ADDITIONAL_CATEGORIES}
+
+    for item_type, items in type_dict.items():
+        for item in items:
+            process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_categorized, all_items, OVERRIDES, MANUAL_CATEGORIES)
+
+    flattened_type_dict = {item: item_type for item_type, items in type_dict.items() for item in items}
+    uncategorized_items = set(wfm_item_data.keys()) - all_items
+
+    for item in uncategorized_items:
+        category = find_category(item, flattened_type_dict)
+        wfm_items_categorized[category][item] = wfm_item_data[item]
+
+    wfm_items_categorized = {item_type: items for item_type, items in sorted(wfm_items_categorized.items()) if items}
+
+    return wfm_items_categorized
+
 
 def parse_rarity(relic_name):
-    if relic_name[-6:] == "Bronze":
-        return "Intact"
-    elif relic_name[-6:] == "Silver":
-        return "Exceptional"
-    elif relic_name[-4:] == "Gold":
-        return "Flawless"
-    elif relic_name[-8:] == "Platinum":
-        return "Radiant"
-    else:
-        return ""
+    rarities = {
+        "Bronze": "Intact",
+        "Silver": "Exceptional",
+        "Gold": "Flawless",
+        "Platinum": "Radiant"
+    }
+    for key in rarities:
+        if relic_name.endswith(key):
+            return rarities[key]
+    return ""
 
 
 def fix():
@@ -386,7 +489,6 @@ def gen_type_dict(manifest_list: dict, parser: dict):
                  'AyatanStars': set(),
                  'FocusLens': set(),
                  'Plants': set(),
-                 'Resources': set(),
                  'Gems': set(),
                  'ShipComponents': set(),
                  'Misc': set(),
@@ -424,8 +526,8 @@ def gen_type_dict(manifest_list: dict, parser: dict):
 
     data = manifest_list['ExportResources']
 
-    item_type = {'/Lotus/Types/Items/MiscItems/ResourceItem': 'Resources',
-                 '/Lotus/Types/Gameplay/Zariman/Resources/ZarimanResourceItem': 'Resources',
+    item_type = {'/Lotus/Types/Items/MiscItems/ResourceItem': 'Misc',
+                 '/Lotus/Types/Gameplay/Zariman/Resources/ZarimanResourceItem': 'Misc',
                  '/Lotus/Types/Gameplay/Zariman/Resources/ZarimanDogTag': 'SyndicateMedallions',
                  '/Lotus/Types/Items/SyndicateDogTags/DogTag': 'SyndicateMedallions',
                  '/Lotus/Types/Items/SyndicateDogTags/SteelMeridianDogTag': 'SyndicateMedallions',
@@ -457,8 +559,8 @@ def gen_type_dict(manifest_list: dict, parser: dict):
                  '/Lotus/Types/Items/ShipDecos/BaseFishTrophy': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/Vignettes/Enemies/ShipDecoItem': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/Plushies/PlushyThumper': 'Decorations',
-                 '/Lotus/Types/Items/Research/SampleBase': 'Resources',
-                 '/Lotus/Types/Items/RailjackMiscItems/BaseRailjackItem': 'Resources',
+                 '/Lotus/Types/Items/Research/SampleBase': 'Misc',
+                 '/Lotus/Types/Items/RailjackMiscItems/BaseRailjackItem': 'Misc',
                  '/Lotus/Types/Items/Plants/MiscItems/PlantItem': 'Plants',
                  '/Lotus/Types/Items/Gems/GemItem': 'Gems',
                  '/Lotus/Types/Items/FusionTreasures/FusionOrnament': 'AyatanStars',
@@ -481,7 +583,7 @@ def gen_type_dict(manifest_list: dict, parser: dict):
                  '/Lotus/Types/Items/Fish/Solaris/CorpusCoolCommonFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/CorpusBothUncommonFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/FishItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/FishPartItem': 'Resources',
+                 '/Lotus/Types/Items/Fish/FishPartItem': 'Misc',
                  '/Lotus/Types/Items/Fish/Eidolon/NightRareFishBItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/RareFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/NightRareFishAItem': 'Fish',
@@ -574,14 +676,3 @@ def gen_type_dict(manifest_list: dict, parser: dict):
             type_dict[key] = list(type_dict[key])
 
     return type_dict
-
-
-
-
-
-manifest_list = get_manifest()
-
-parser = build_parser(manifest_list)
-
-type_dict = gen_type_dict(manifest_list, parser)
-
