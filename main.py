@@ -327,7 +327,7 @@ def build_item_ids(items, translation_dict):
 async def main(args):
     output_directory = args.output_directory if args.output_directory else OUTPUT_DIRECTORY
 
-    cnx = pymysql.connect(user='root', password='Zg2UXkJ3hVkHPANGJGYu', host='localhost', database='market')
+    cnx = pymysql.connect(user='market', password='Zg2UXkJ3hVkHPANGJGYu', host='localhost', database='market')
 
     if args.fetch:
         async with cache_manager() as cache:
