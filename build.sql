@@ -45,3 +45,11 @@ CREATE TABLE item_mod_ranks (
     PRIMARY KEY (item_id, mod_rank),
     FOREIGN KEY (item_id) REFERENCES items(id)  -- Adjust the referenced table and column name as needed
 );
+
+CREATE TABLE items_in_set (
+    item_id VARCHAR(255),
+    set_id VARCHAR(255),
+    PRIMARY KEY (item_id, set_id),
+    FOREIGN KEY (item_id) REFERENCES items(id),
+    FOREIGN KEY (set_id) REFERENCES sets(id)
+);

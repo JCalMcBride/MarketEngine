@@ -290,6 +290,19 @@ def save_mod_type_data(connection):
                           WHERE mod_rank IS NOT NULL""")
 
 
+def get_all_sets(connection):
+    with connection.cursor() as cursor:
+        cursor.execute("""select id, url_name from items where item_name like '%Set'""")
+
+    return dict(cursor.fetchall())
+
+
+def save_set_data(connection, part_ids):
+    query = """INSERT IGNORE INTO items_in_set (item_id, set_id) VALUES (%s, %s)"""
+    with connection.cursor() as cursor:
+        cursor.executemany(query, part_ids)
+
+
 def build_item_ids(items, translation_dict):
     item_ids = {}
 
@@ -324,6 +337,11 @@ def build_item_ids(items, translation_dict):
     return item_ids
 
 
+async def fetch_set_data(url_name, session, cache):
+    url = f"{API_BASE_URL}/items/{url_name}"
+    return (await fetch_api_data(session, cache, url))["payload"]["item"]["items_in_set"]
+
+
 async def main(args):
     output_directory = args.output_directory if args.output_directory else OUTPUT_DIRECTORY
 
@@ -341,6 +359,14 @@ async def main(args):
 
                 price_history_dict = await process_price_history(session, cache, items, translation_dict, item_ids)
                 save_price_history(price_history_dict, output_directory)
+
+    sets = get_all_sets(cnx)
+
+    async with cache_manager() as cache:
+        async with session_manager() as session:
+            for set_id, url_name in sets.items():
+                set_data = await fetch_set_data(url_name, session,  cache)
+                save_set_data(cnx, [(x['id'], set_id) for x in set_data if x['id'] != set_id])
 
     date = None
     if not args.database:
