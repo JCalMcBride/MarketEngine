@@ -6,14 +6,13 @@ import uuid
 from asyncio import sleep
 from collections import defaultdict
 from json import JSONDecodeError
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List
 
 from aiohttp import ClientResponseError, ServerDisconnectedError
 from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 
 import common
-import modules.MarketDB as MarketDB
 
 MANIFEST_URL = "https://content.warframe.com/PublicExport/index_en.txt.lzma"
 API_BASE_URL = "https://api.warframe.market/v1"
