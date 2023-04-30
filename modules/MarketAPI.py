@@ -259,7 +259,9 @@ def save_item_info(item_info):
         json.dump(item_info, f)
 
 
-async def fetch_and_save_statistics(items, item_ids):
+async def fetch_and_save_statistics(items, item_ids) -> tuple[
+    defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
+        str, defaultdict[Any, list] | defaultdict[str, list]], list[Any]]:
     async with common.cache_manager() as cache:
         async with common.session_manager() as session:
             with open('data/translation_dict.json', 'r') as f:
@@ -270,7 +272,7 @@ async def fetch_and_save_statistics(items, item_ids):
             save_price_history(price_history_dict)
             save_item_info(item_info)
 
-    return item_info
+    return price_history_dict, item_info
 
 
 def parse_item_info(item_info):
@@ -299,7 +301,7 @@ def parse_item_info(item_info):
 async def process_price_history(cache, session, items: List[Dict[str, Any]], translation_dict: Dict[str, str],
                                 item_ids: Dict[str, str]) -> \
         tuple[defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
-            str, defaultdict[Any, list] | defaultdict[str, list]], list[Any]]:
+            str, defaultdict[Any, list] | defaultdict[str, list]], dict[Any, Any]]:
     price_history_dict = defaultdict(lambda: defaultdict(list))
     item_info = {}
 
@@ -363,9 +365,10 @@ async def fetch_item_statistics(cache, session, item_url_name: str) -> Dict[str,
     return await fetch_api_data(cache, session, url)
 
 
-def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]):
+def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                       directory: str = common.OUTPUT_DIRECTORY):
     for day, history in price_history_dict.items():
-        filename = f"{common.OUTPUT_DIRECTORY}/price_history_{day}.json"
+        filename = f"{directory}/price_history_{day}.json"
         if not os.path.isfile(filename):
             with open(filename, "w") as fp:
                 json.dump(history, fp)
