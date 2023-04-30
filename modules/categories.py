@@ -83,8 +83,8 @@ def process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_
         all_items.add(item)
 
 
-def get_wfm_item_categorized(wfm_item_data, manifest_list, wf_parser):
-    type_dict = gen_type_dict(manifest_list, wf_parser)
+def get_wfm_item_categorized(wfm_item_data, manifest_dict, wf_parser):
+    type_dict = gen_type_dict(manifest_dict, wf_parser)
     wfm_item_data_lower = {k.lower(): k for k, v in wfm_item_data.items()}
     all_items = set()
 
@@ -144,7 +144,7 @@ def parse_name(name, parser):
         return name
 
 
-def build_parser(manifest_list):
+def build_parser(manifest_dict):
     parser_base = {'AP_POWER': 'Zenurik',
                    'AP_TACTIC': 'Naramon',
                    'AP_DEFENSE': 'Vazarin',
@@ -344,7 +344,7 @@ def build_parser(manifest_list):
                    }
     parser = {}
 
-    for manifest_file in manifest_list.values():
+    for manifest_file in manifest_dict.values():
         for key in manifest_file:
             ingredient_list = []
             for data in manifest_file[key]:
@@ -407,7 +407,7 @@ def build_parser(manifest_list):
     return parser
 
 
-def gen_type_dict(manifest_list: dict, parser: dict):
+def gen_type_dict(manifest_dict: dict, parser: dict):
     type_dict = {'Relics': set(),
                  'Arcanes': set(),
                  'Mods': set(),
@@ -437,7 +437,7 @@ def gen_type_dict(manifest_list: dict, parser: dict):
                  'Misc': set(),
                  }
 
-    for data in manifest_list.values():
+    for data in manifest_dict.values():
         for key in data:
             for item in data[key]:
                 if "name" in item and "<ARCHWING> " in item['name']:
@@ -467,7 +467,7 @@ def gen_type_dict(manifest_list: dict, parser: dict):
                     else:
                         type_dict['Sentinels'].add(item['name'])
 
-    data = manifest_list['ExportResources']
+    data = manifest_dict['ExportResources']
 
     item_type = {'/Lotus/Types/Items/MiscItems/ResourceItem': 'Misc',
                  '/Lotus/Types/Gameplay/Zariman/Resources/ZarimanResourceItem': 'Misc',
@@ -596,7 +596,7 @@ def gen_type_dict(manifest_list: dict, parser: dict):
         else:
             type_dict['Misc'].add(item['name'])
 
-    data = manifest_list['ExportRecipes']
+    data = manifest_dict['ExportRecipes']
 
     for item in data['ExportRecipes']:
         dict_keys = ['Warframes', 'PrimeWarframes', 'Weapons', 'PrimeWeapons', 'WeaponParts', 'WarframeParts',

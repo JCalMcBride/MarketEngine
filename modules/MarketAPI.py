@@ -6,9 +6,9 @@ import uuid
 from asyncio import sleep
 from collections import defaultdict
 from json import JSONDecodeError
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientResponseError, ServerDisconnectedError
 from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
 
@@ -107,35 +107,44 @@ async def fix(cache, session):
     return decompress_lzma(byt[0:length]).decode("utf-8")
 
 
-async def get_manifest(cache, session):
-    wf_manifest = await fix(cache, session)
-    wf_manifest = wf_manifest.split('\r\n')
-    manifest_list = {}
-    for item in wf_manifest:
-        try:
-            url = f"http://content.warframe.com/PublicExport/Manifest/{item}"
-            data = get_cached_data(cache, url)
-            if data is None:
-                async with session.get(url) as response:
-                    response.raise_for_status()
-                    data = await response.text()
-                    common.logger.debug(f"Fetched data for {url}")
-
-                    # Store the data in the cache with a 24-hour expiration
-                    cache.set(url, data, ex=24 * 60 * 60)
-
-            json_file = json.loads(data, strict=False)
-
-            manifest_list[item.split("_en")[0]] = json_file
-        except JSONDecodeError:
-            pass
-        except ClientResponseError:
-            common.logger.error(f"Failed to fetch manifest {item}")
-
-    return manifest_list
+def save_manifest(manifest_dict):
+    for item in manifest_dict:
+        with open(f"data/manifest_{item}.json", "w") as f:
+            json.dump(manifest_dict, f)
 
 
-async def get_price_history_dates(cache, session) -> List:
+async def get_manifest():
+    async with common.session_manager() as session, common.cache_manager() as cache:
+        wf_manifest = await fix(cache, session)
+        wf_manifest = wf_manifest.split('\r\n')
+        manifest_dict = {}
+        for item in wf_manifest:
+            try:
+                url = f"http://content.warframe.com/PublicExport/Manifest/{item}"
+                data = get_cached_data(cache, url)
+                if data is None:
+                    async with session.get(url) as response:
+                        response.raise_for_status()
+                        data = await response.text()
+                        common.logger.debug(f"Fetched data for {url}")
+
+                        # Store the data in the cache with a 24-hour expiration
+                        cache.set(url, data, ex=24 * 60 * 60)
+
+                json_file = json.loads(data, strict=False)
+
+                manifest_dict[item.split("_en")[0]] = json_file
+            except JSONDecodeError:
+                pass
+            except ClientResponseError:
+                common.logger.error(f"Failed to fetch manifest {item}")
+
+        save_manifest(manifest_dict)
+
+        return manifest_dict
+
+
+async def get_price_history_dates(cache, session) -> set:
     url = 'https://relics.run/history/'
 
     # Check if the data is in the cache
@@ -152,34 +161,56 @@ async def get_price_history_dates(cache, session) -> List:
 
     soup = BeautifulSoup(data, 'html.parser')
 
-    urls = []
+    urls = set()
     for link_obj in soup.find_all('a'):
         link = link_obj.get('href')
         if link.endswith('json'):
-            urls.append(link)
+            urls.add(link)
 
     return urls
 
 
-async def fetch_premade_data(cache, session) -> None:
-    date_list = await get_price_history_dates(cache, session)
+def get_saved_data():
+    saved_data = set()
+    for file in os.listdir("output"):
+        if file.endswith(".json"):
+            saved_data.add(file)
 
-    for date in date_list:
+    return saved_data
+
+
+async def get_dates_to_fetch(cache, session):
+    date_list = await get_price_history_dates(cache, session)
+    saved_data = get_saved_data()
+    date_list = date_list - saved_data
+
+    return date_list
+
+
+async def fetch_premade_statistics() -> None:
+    async def fetch_data(date):
         url = f"https://relics.run/history/{date}"
-        data = get_cached_data(cache, url)
-        if data is None:
+
+        try:
             async with session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
                 common.logger.debug(f"Fetched data for {url}")
-
-                # Store the data in the cache with a 24-hour expiration
-                cache.set(url, json.dumps(data), ex=24 * 60 * 60)
-        else:
-            json.loads(data)
+        except ClientResponseError:
+            common.logger.error(f"Failed to fetch data for {date}")
+            return
+        except ServerDisconnectedError:
+            common.logger.error(f"Failed to fetch data for {date}")
+            return
 
         with open(os.path.join('output', date), 'w') as f:
             json.dump(data, f)
+
+    async with common.cache_manager() as cache:
+        async with common.session_manager() as session:
+            date_list = await get_dates_to_fetch(cache, session)
+
+            await asyncio.gather(*[fetch_data(date) for date in date_list])
 
 
 async def fetch_set_data(url_name, cache, session):
@@ -223,34 +254,60 @@ def build_item_ids(items, translation_dict):
     return item_ids
 
 
-async def fetch_and_save_sets(cache, session):
-    sets = MarketDB.get_all_sets()
-
-    for set_id, url_name in sets.items():
-        set_data = await fetch_set_data(url_name, cache, session)
-        MarketDB.save_set_data([(x['id'], set_id) for x in set_data if x['id'] != set_id])
+def save_item_info(item_info):
+    with open('data/item_info.json', 'w') as f:
+        json.dump(item_info, f)
 
 
-async def fetch_and_save_statistics(cache, session):
-    items = await fetch_all_items(cache, session)
-    with open('data/translation_dict.json', 'r') as f:
-        translation_dict = json.load(f)
+async def fetch_and_save_statistics(items, item_ids):
+    async with common.cache_manager() as cache:
+        async with common.session_manager() as session:
+            with open('data/translation_dict.json', 'r') as f:
+                translation_dict = json.load(f)
 
-    item_ids = build_item_ids(items, translation_dict)
-    MarketDB.save_items(items, item_ids)
+            price_history_dict, item_info = await process_price_history(cache, session, items, translation_dict,
+                                                                        item_ids)
+            save_price_history(price_history_dict)
+            save_item_info(item_info)
 
-    price_history_dict = await process_price_history(cache, session, items, translation_dict, item_ids)
-    save_price_history(price_history_dict)
+    return item_info
+
+
+def parse_item_info(item_info):
+    parsed_info = {'set_items': [], 'item_id': item_info['id'], 'tags': [], 'mod_max_rank': None, 'subtypes': []}
+    set_root = False
+    for item in item_info['items_in_set']:
+        if item['id'] == item_info['id']:
+            if 'set_root' in item:
+                set_root = item['set_root']
+
+            parsed_info['tags'] = item['tags']
+            if 'mod_max_rank' in item:
+                parsed_info['mod_max_rank'] = item['mod_max_rank']
+
+            if 'subtypes' in item:
+                parsed_info['subtypes'] = item['subtypes']
+        else:
+            parsed_info['set_items'].append(item['id'])
+
+    if not set_root:
+        parsed_info['set_items'] = []
+
+    return parsed_info
 
 
 async def process_price_history(cache, session, items: List[Dict[str, Any]], translation_dict: Dict[str, str],
                                 item_ids: Dict[str, str]) -> \
-        Dict[str, Dict[str, List[Dict[str, Any]]]]:
+        tuple[defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
+            str, defaultdict[Any, list] | defaultdict[str, list]], list[Any]]:
     price_history_dict = defaultdict(lambda: defaultdict(list))
+    item_info = {}
 
     async def fetch_and_process_item_statistics(item):
-        price_history = await fetch_item_statistics(cache, session, item["url_name"])
+        api_data = await fetch_item_statistics(cache, session, item["url_name"])
+        price_history = api_data["payload"]
         common.logger.info(f"Processing {item['item_name']}")
+        item_info[item['id']] = parse_item_info(api_data["include"]["item"])
 
         for ph in [price_history["statistics_closed"]["90days"], price_history["statistics_live"]["90days"]]:
             for price_history_day in ph:
@@ -268,17 +325,42 @@ async def process_price_history(cache, session, items: List[Dict[str, Any]], tra
 
     await asyncio.gather(*[fetch_and_process_item_statistics(item) for item in items])
 
-    return price_history_dict
+    return price_history_dict, item_info
 
 
-async def fetch_all_items(cache, session) -> List[Dict[str, Any]]:
-    url = f"{API_BASE_URL}{ITEMS_ENDPOINT}"
-    return (await fetch_api_data(cache, session, url))["payload"]["items"]
+async def fetch_all_items() -> List[Dict[str, Any]]:
+    async with common.session_manager() as session, common.cache_manager() as cache:
+        url = f"{API_BASE_URL}{ITEMS_ENDPOINT}"
+        return (await fetch_api_data(cache, session, url))["payload"]["items"]
+
+
+async def fetch_and_save_items_and_ids():
+    items = await fetch_all_items()
+    async with common.cache_manager() as cache:
+        item_ids = get_cached_data(cache, 'data/item_ids.json')
+        if item_ids is None:
+            common.logger.info("Building Item IDs")
+            with open('data/translation_dict.json', 'r') as f:
+                translation_dict = json.load(f)
+
+            item_ids = build_item_ids(items, translation_dict)
+            cache.set('data/item_ids.json', json.dumps(item_ids), ex=60 * 60 * 24 * 7)
+        else:
+            common.logger.info("Loaded Item IDs from cache")
+            item_ids = json.loads(item_ids)
+
+    with open('data/item_ids.json', 'w') as f:
+        json.dump(item_ids, f)
+
+    with open('data/items.json', 'w') as f:
+        json.dump(items, f)
+
+    return items, item_ids
 
 
 async def fetch_item_statistics(cache, session, item_url_name: str) -> Dict[str, Any]:
-    url = f"{API_BASE_URL}{STATISTICS_ENDPOINT.format(item_url_name)}"
-    return (await fetch_api_data(cache, session, url))["payload"]
+    url = f"{API_BASE_URL}{STATISTICS_ENDPOINT.format(item_url_name)}?include=item"
+    return await fetch_api_data(cache, session, url)
 
 
 def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, Any]]]]):
@@ -287,3 +369,24 @@ def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, An
         if not os.path.isfile(filename):
             with open(filename, "w") as fp:
                 json.dump(history, fp)
+
+
+def fetch_premade_item_data():
+    with open('data/items.json', 'r') as f:
+        items = json.load(f)
+
+    with open('data/item_ids.json', 'r') as f:
+        item_ids = json.load(f)
+
+    with open('data/item_info.json', 'r') as f:
+        item_info = json.load(f)
+
+    return items, item_ids, item_info
+
+
+def fetch_premade_manifest():
+    manifest_list = []
+    for filename in os.listdir('data'):
+        if filename.startswith("manifest"):
+            with open(f"{common.OUTPUT_DIRECTORY}/{filename}", "r") as fp:
+                yield json.load(fp)

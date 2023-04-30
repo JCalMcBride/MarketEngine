@@ -18,18 +18,22 @@ def connect_to_database():
 connection = connect_to_database()
 
 
-def save_items(items, item_ids):
-    data_list = [(item['id'], item['item_name'], item['url_name'], item['thumb']) for item in items]
+def save_items(items, item_ids, item_info):
+    if items is None or item_ids is None:
+        return
+
+    data_list = [(item['id'], item['item_name'], item['url_name'], item['thumb'], item_info[item['id']]['mod_max_rank'])
+                 for item in items]
 
     new_item_ids = {}
     for item, item_id in item_ids.items():
         if item_id not in [x['id'] for x in items]:
             new_item_ids[item] = item_id
-    data_list.extend([(new_item_ids[item], item, None, None) for item in new_item_ids])
+    data_list.extend([(new_item_ids[item], item, None, None, None) for item in new_item_ids])
 
     insert_query = """
-        INSERT IGNORE INTO items (id, item_name, url_name, thumb)
-        VALUES (%s, %s, %s, %s)
+        INSERT IGNORE INTO items (id, item_name, url_name, thumb, max_rank)
+        VALUES (%s, %s, %s, %s, %s)
     """
 
     with connection.cursor() as cursor:
@@ -67,9 +71,9 @@ def get_item_data():
     return dict(cursor.fetchall())
 
 
-def build_category_info(manifest_list):
-    wf_parser = categories.build_parser(manifest_list)
-    item_categories = categories.get_wfm_item_categorized(get_item_data(), manifest_list, wf_parser)
+def build_and_save_category_info(manifest_dict):
+    wf_parser = categories.build_parser(manifest_dict)
+    item_categories = categories.get_wfm_item_categorized(get_item_data(), manifest_dict, wf_parser)
 
     query = """UPDATE items SET item_type = %s WHERE id = %s"""
 
@@ -77,21 +81,6 @@ def build_category_info(manifest_list):
         for item_type in item_categories:
             cursor.executemany(query, [(item_type, item_id) for item_id in item_categories[item_type].values()])
 
-
-def save_sub_type_data():
-    with connection.cursor() as cursor:
-        cursor.execute("""INSERT IGNORE INTO item_subtypes (item_id, sub_type)
-                          SELECT DISTINCT item_id, subtype
-                          FROM item_statistics
-                          WHERE subtype IS NOT NULL""")
-
-
-def save_mod_type_data():
-    with connection.cursor() as cursor:
-        cursor.execute("""INSERT IGNORE INTO item_mod_ranks (item_id, mod_rank)
-                          SELECT DISTINCT item_id, mod_rank
-                          FROM item_statistics
-                          WHERE mod_rank IS NOT NULL""")
 
 
 def get_all_sets():
@@ -107,15 +96,11 @@ def save_set_data(part_ids):
         cursor.executemany(query, part_ids)
 
 
-def get_last_saved_date():
-    return get_date()
-
-
-def misc_data_handler(args, manifest_list):
-    if args.database:
-        build_category_info(manifest_list)
-        save_sub_type_data()
-        save_mod_type_data()
+def get_last_saved_date(date_to_fetch):
+    if date_to_fetch == "NEW":
+        return get_date()
+    elif date_to_fetch == "ALL":
+        return None
 
 
 def insert_item_statistics(last_save_date):
@@ -207,3 +192,36 @@ def get_data_list(file_list):
 def commit_data():
     with connection.cursor() as cursor:
         cursor.execute("COMMIT")
+
+
+def save_items_in_set(item_info):
+    data_list = []
+    for item in item_info:
+        for item_in_set in item_info[item]['set_items']:
+            data_list.append((item, item_in_set))
+
+    query = """INSERT IGNORE INTO items_in_set (item_id, set_id) VALUES (%s, %s)"""
+    with connection.cursor() as cursor:
+        cursor.executemany(query, data_list)
+
+
+def save_item_tags(item_info):
+    data_list = []
+    for item in item_info:
+        for tag in item_info[item]['tags']:
+            data_list.append((item, tag))
+
+    query = """INSERT IGNORE INTO item_tags (item_id, tag) VALUES (%s, %s)"""
+    with connection.cursor() as cursor:
+        cursor.executemany(query, data_list)
+
+
+def save_item_subtypes(item_info):
+    data_list = []
+    for item in item_info:
+        for subtype in item_info[item]['subtypes']:
+            data_list.append((item, subtype))
+
+    query = """INSERT IGNORE INTO item_subtypes (item_id, sub_type) VALUES (%s, %s)"""
+    with connection.cursor() as cursor:
+        cursor.executemany(query, data_list)

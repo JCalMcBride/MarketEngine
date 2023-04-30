@@ -40,3 +40,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger()
 
 rate_limiter = AsyncLimiter(3, 1)  # 3 requests per 1 second
+
+
+async def clear_cache():
+    async with cache_manager() as cache:
+        cache.flushall()
