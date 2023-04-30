@@ -10,6 +10,8 @@ from typing import Dict, Any, List
 
 from aiohttp import ClientResponseError
 from aiolimiter import AsyncLimiter
+from bs4 import BeautifulSoup
+
 import common
 import modules.MarketDB as MarketDB
 
@@ -133,6 +135,53 @@ async def get_manifest(cache, session):
     return manifest_list
 
 
+async def get_price_history_dates(cache, session) -> List:
+    url = 'https://relics.run/history/'
+
+    # Check if the data is in the cache
+    data = get_cached_data(cache, url)
+    if data is None:
+        # Make the API request
+        async with session.get(url) as response:
+            response.raise_for_status()
+            data = await response.text()
+            common.logger.debug(f"Fetched data for {url}")
+
+            # Store the data in the cache with a 24-hour expiration
+            cache.set(url, data, ex=24 * 60 * 60)
+
+    soup = BeautifulSoup(data, 'html.parser')
+
+    urls = []
+    for link_obj in soup.find_all('a'):
+        link = link_obj.get('href')
+        if link.endswith('json'):
+            urls.append(link)
+
+    return urls
+
+
+async def fetch_premade_data(cache, session) -> None:
+    date_list = await get_price_history_dates(cache, session)
+
+    for date in date_list:
+        url = f"https://relics.run/history/{date}"
+        data = get_cached_data(cache, url)
+        if data is None:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+                common.logger.debug(f"Fetched data for {url}")
+
+                # Store the data in the cache with a 24-hour expiration
+                cache.set(url, json.dumps(data), ex=24 * 60 * 60)
+        else:
+            json.loads(data)
+
+        with open(os.path.join('output', date), 'w') as f:
+            json.dump(data, f)
+
+
 async def fetch_set_data(url_name, cache, session):
     url = f"{API_BASE_URL}/items/{url_name}"
     return (await fetch_api_data(cache, session, url))["payload"]["item"]["items_in_set"]
@@ -145,6 +194,9 @@ def build_item_ids(items, translation_dict):
         item_ids[item['item_name']] = item['id']
 
     for file in os.listdir('output'):
+        if not file.endswith('.json'):
+            continue
+
         common.logger.info(f"Processing {file}")
         with open(os.path.join('output', file), 'r') as f:
             history_file = json.load(f)

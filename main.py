@@ -13,6 +13,8 @@ async def main(args):
                 await MarketAPI.fetch_and_save_statistics(cache, session)
                 await MarketAPI.fetch_and_save_sets(cache, session)
 
+            await MarketAPI.fetch_premade_data(cache, session)
+
             last_save_date = None
             if args.database:
                 MarketDB.get_last_saved_date()

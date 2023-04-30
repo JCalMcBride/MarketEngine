@@ -8,7 +8,7 @@ from pytz import timezone
 
 import common
 from common import managed_transaction
-from modules import categories, MarketAPI
+from modules import categories
 
 
 def connect_to_database():

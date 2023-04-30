@@ -1,11 +1,6 @@
-import json
-import lzma
 import re
-from json import JSONDecodeError
 
 import requests
-
-import common
 
 ADDITIONAL_CATEGORIES = ['ArcaneHelmets', 'Imprints', 'VeiledRivenMods', 'Emotes',
                          'ArmorPieces', "CollectorItems"]
