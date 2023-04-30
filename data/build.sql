@@ -51,5 +51,5 @@ CREATE TABLE items_in_set (
     set_id VARCHAR(255),
     PRIMARY KEY (item_id, set_id),
     FOREIGN KEY (item_id) REFERENCES items(id),
-    FOREIGN KEY (set_id) REFERENCES sets(id)
+    FOREIGN KEY (set_id) REFERENCES items(id)
 );
