@@ -22,6 +22,8 @@ def save_items(items, item_ids, item_info):
     if items is None or item_ids is None:
         return
 
+    type(item_info)
+
     data_list = [(item['id'], item['item_name'], item['url_name'], item['thumb'], item_info[item['id']]['mod_max_rank'])
                  for item in items]
 
@@ -88,12 +90,6 @@ def get_all_sets():
         cursor.execute("""select id, url_name from items where item_name like '%Set'""")
 
     return dict(cursor.fetchall())
-
-
-def save_set_data(part_ids):
-    query = """INSERT IGNORE INTO items_in_set (item_id, set_id) VALUES (%s, %s)"""
-    with connection.cursor() as cursor:
-        cursor.executemany(query, part_ids)
 
 
 def get_last_saved_date(date_to_fetch):
@@ -200,7 +196,7 @@ def save_items_in_set(item_info):
         for item_in_set in item_info[item]['set_items']:
             data_list.append((item, item_in_set))
 
-    query = """INSERT IGNORE INTO items_in_set (item_id, set_id) VALUES (%s, %s)"""
+    query = """INSERT IGNORE INTO items_in_set (set_id, item_id) VALUES (%s, %s)"""
     with connection.cursor() as cursor:
         cursor.executemany(query, data_list)
 

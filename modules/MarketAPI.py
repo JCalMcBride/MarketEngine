@@ -8,7 +8,7 @@ import uuid
 from asyncio import sleep
 from collections import defaultdict
 from json import JSONDecodeError
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 from aiohttp import ClientResponseError, ServerDisconnectedError
 from aiolimiter import AsyncLimiter
@@ -262,7 +262,7 @@ def save_item_info(item_info):
 
 async def fetch_and_save_statistics(items, item_ids) -> tuple[
     defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
-        str, defaultdict[Any, list] | defaultdict[str, list]], list[Any]]:
+        str, defaultdict[Any, list] | defaultdict[str, list]], dict[Any, Any]]:
     async with common.cache_manager() as cache:
         async with common.session_manager() as session:
             with open('data/translation_dict.json', 'r') as f:
@@ -375,22 +375,25 @@ def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, An
                 json.dump(history, fp)
 
 
-def fetch_premade_item_data():
-    with open('data/items.json', 'r') as f:
-        items = json.load(f)
+async def fetch_premade_item_data():
+    urls = [
+        "https://relics.run/market_data/items.json",
+        "https://relics.run/market_data/item_ids.json",
+        "https://relics.run/market_data/item_info.json"
+    ]
 
-    with open('data/item_ids.json', 'r') as f:
-        item_ids = json.load(f)
+    async with common.session_manager() as session:
+        # Create a list of tasks for each URL
+        tasks = [session.get(url) for url in urls]
 
-    with open('data/item_info.json', 'r') as f:
-        item_info = json.load(f)
+        # Wait for all tasks to complete and store the responses in a list
+        responses = await asyncio.gather(*tasks)
 
-    return items, item_ids, item_info
+        # Convert each response to JSON data and store them in a list
+        items_data, item_ids_data, item_info_data = [
+            await response.json() for response in responses
+        ]
 
+    # Return the JSON data as a tuple of named variables
+    return items_data, item_ids_data, item_info_data
 
-def fetch_premade_manifest():
-    manifest_list = []
-    for filename in os.listdir('data'):
-        if filename.startswith("manifest"):
-            with open(f"{common.OUTPUT_DIRECTORY}/{filename}", "r") as fp:
-                yield json.load(fp)

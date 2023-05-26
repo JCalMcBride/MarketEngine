@@ -12,14 +12,13 @@ async def main(args):
 
     items, item_ids, item_info, manifest_dict = None, None, None, None
     if args.fetch is not None:
+        manifest_dict = await MarketAPI.get_manifest()
         if args.fetch == "NEW":
             items, item_ids = await MarketAPI.fetch_and_save_items_and_ids()
-            item_info = await MarketAPI.fetch_and_save_statistics(items, item_ids)
-            manifest_dict = await MarketAPI.get_manifest()
+            price_history_dict, item_info = await MarketAPI.fetch_and_save_statistics(items, item_ids)
         else:
-            items, item_ids, item_info = MarketAPI.fetch_premade_item_data()
+            items, item_ids, item_info = await MarketAPI.fetch_premade_item_data()
             await MarketAPI.fetch_premade_statistics()
-            manifest_dict = MarketAPI.fetch_premade_manifest()
 
     if args.database is not None:
         MarketDB.save_items(items, item_ids, item_info)

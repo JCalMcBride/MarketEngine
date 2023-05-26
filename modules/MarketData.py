@@ -31,8 +31,8 @@ async def fetch_wfm_data(url: str):
                             logger.info(f"Fetched data from {url}")
                             data = await r.json()
 
-                            # Store the data in the cache with a 1-minute expiration
-                            cache.set(url, json.dumps(data), ex=60)
+                            # Store the data in the cache with a 15-second expiration
+                            cache.set(url, json.dumps(data), ex=15)
 
                             return await r.json()
                         else:
@@ -66,15 +66,32 @@ def remove_common_words(name: str, common_words: set) -> str:
 
 def remove_blueprint(s: str) -> str:
     words = s.lower().split()
-    if words[-1:] == ['blueprint'] and words[-2:-1] != ['prime']:
+    if words[-1:] == ['blueprint'] and words[-2] not in ['prime', 'wraith', 'vandal']:
         return ' '.join(words[:-1])
     return s.lower()
+
+def replace_aliases(name: str, aliases: dict, threshold=80) -> str:
+    words = name.split()
+    new_words = []
+
+    for word in words:
+        for alias, replacement in aliases.items():
+            if fuzz.ratio(word, alias) >= threshold:
+                new_words.append(replacement)
+                break
+        else:  # This is executed if the loop didn't break, meaning no replacement was found
+            new_words.append(word)
+
+    return ' '.join(new_words)
 
 
 def find_best_match(item_name: str, items: List[Dict[str, Any]]) -> Tuple[int, Optional[Dict[str, str]]]:
     best_score, best_item = 0, None
     common_words = {'arcane', 'prime', 'scene', 'set'}
+    aliases = {'head': 'neuroptics',
+               'taserman': 'volt'}
 
+    item_name = replace_aliases(item_name, aliases)
     item_name = remove_common_words(item_name, common_words)
 
     for item in items:
@@ -90,26 +107,34 @@ def find_best_match(item_name: str, items: List[Dict[str, Any]]) -> Tuple[int, O
 
 
 class MarketDatabase:
-    GET_ITEM_QUERY: str = "SELECT * FROM items WHERE item_name=%s"
-    GET_ITEM_SUBTYPES_QUERY: str = "SELECT * FROM item_subtypes WHERE item_id=%s"
-    GET_ITEM_MOD_RANKS_QUERY: str = "SELECT * FROM item_mod_ranks WHERE item_id=%s"
-    GET_ITEM_STATISTICS_QUERY: str = ("SELECT datetime, avg_price "
-                                      "FROM item_statistics "
-                                      "WHERE item_id=%s "
-                                      "AND order_type='closed'")
-    GET_ITEM_VOLUME_QUERY: str = ("SELECT volume "
-                                  "FROM item_statistics "
-                                  "WHERE datetime >= NOW() - INTERVAL %s DAY "
-                                  "AND order_type='closed' "
-                                  "AND item_id = %s")
-    GET_ALL_ITEMS_QUERY: str = ("SELECT items.id, items.item_name, items.item_type, "
-                                "items.url_name, items.thumb, item_aliases.alias "
-                                "FROM items LEFT JOIN item_aliases ON items.id = item_aliases.item_id")
-    GET_ITEMS_IN_SET_QUERY: str = ("SELECT items.id, items.item_name, items.item_type, items.url_name, items.thumb "
-                                   "FROM items_in_set "
-                                   "INNER JOIN items "
-                                   "ON items_in_set.item_id = items.id "
-                                   "WHERE items_in_set.set_id = %s")
+    _GET_ITEM_QUERY: str = "SELECT * FROM items WHERE item_name=%s"
+    _GET_ITEM_SUBTYPES_QUERY: str = "SELECT * FROM item_subtypes WHERE item_id=%s"
+    _GET_ITEM_STATISTICS_QUERY: str = ("SELECT datetime, avg_price "
+                                       "FROM item_statistics "
+                                       "WHERE item_id=%s "
+                                       "AND order_type='closed'")
+    _GET_ITEM_VOLUME_QUERY: str = ("SELECT volume "
+                                   "FROM item_statistics "
+                                   "WHERE datetime >= NOW() - INTERVAL %s DAY "
+                                   "AND order_type='closed' "
+                                   "AND item_id = %s")
+    _BASE_ITEMS_QUERY: str = ("SELECT items.id, items.item_name, items.item_type, "
+                              "items.url_name, items.thumb, items.max_rank, item_aliases.alias")
+
+    _GET_ALL_ITEMS_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
+                                 "FROM items LEFT JOIN item_aliases ON items.id = item_aliases.item_id")
+
+    _GET_ITEMS_IN_SET_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
+                                    "FROM items_in_set "
+                                    "INNER JOIN items "
+                                    "ON items_in_set.item_id = items.id "
+                                    "LEFT JOIN item_aliases ON items.id = item_aliases.item_id "
+                                    "WHERE items_in_set.set_id = %s")
+
+    _ADD_ITEM_ALIAS_QUERY: str = "INSERT INTO item_aliases (item_id, alias) VALUES (%s, %s)"
+
+    _ADD_WORD_ALIAS_QUERY: str = "INSERT INTO word_aliases (word, alias) VALUES (%s, %s)"
+
 
     def __init__(self, user: str, password: str, host: str, database: str) -> None:
         self.connection: Connection = pymysql.connect(user=user,
@@ -117,54 +142,60 @@ class MarketDatabase:
                                                       host=host,
                                                       database=database)
 
-        self.all_items = self.get_all_items()
+        self.all_items = self._get_all_items()
 
-    def get_all_items(self) -> list[list]:
-        all_data = self._execute_query(self.GET_ALL_ITEMS_QUERY)
+    def _get_all_items(self) -> List[dict]:
+        all_data = self._execute_query(self._GET_ALL_ITEMS_QUERY)
 
         item_dict = defaultdict(lambda: defaultdict(list))
-        for item_id, item_name, item_type, url_name, thumb, alias in all_data:
+        for item_id, item_name, item_type, url_name, thumb, max_rank, alias in all_data:
             if not item_dict[item_id]['item_data']:
                 item_dict[item_id]['item_data'] = {'id': item_id, 'item_name': item_name, 'item_type': item_type,
-                                                   'url_name': url_name, 'thumb': thumb}
+                                                   'url_name': url_name, 'thumb': thumb, 'max_rank': max_rank}
             if alias:
                 item_dict[item_id]['aliases'].append(alias)
 
-        all_items = [item_data['item_data'] for item_data in item_dict.values()]
+        all_items: List[dict] = [item_data['item_data'] for item_data in item_dict.values()]
 
         return all_items
 
-    def _execute_query(self, query: str, *params) -> tuple[tuple[Any, ...], ...]:
+    def _execute_query(self, query: str, *params) -> Tuple[Tuple[Any, ...], ...]:
         with self.connection.cursor() as cursor:
             cursor.execute(query, params)
             return cursor.fetchall()
 
-    def get_item(self, item: str) -> Optional[MarketItem]:
-        fuzzy_item = self.get_fuzzy_item(item)
+    async def get_item(self, item: str) -> Optional[MarketItem]:
+        fuzzy_item = self._get_fuzzy_item(item)
 
         if fuzzy_item is None:
             return None
 
-        item_data: list[str] = list(fuzzy_item.values())
+        item_data: List[str] = list(fuzzy_item.values())
 
-        return MarketItem(self, *item_data)
+        return await MarketItem.create(self, *item_data)
 
-    def get_item_statistics(self, item_id: str) -> tuple[tuple[Any, ...], ...]:
-        return self._execute_query(self.GET_ITEM_STATISTICS_QUERY, item_id)
+    def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id)
 
-    def get_item_volume(self, item_id: str, days: int = 31) -> tuple[tuple[Any, ...], ...]:
-        return self._execute_query(self.GET_ITEM_VOLUME_QUERY, days, item_id)
+    def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id)
 
     def close(self) -> None:
         self.connection.close()
 
-    def get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
+    def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
         best_score, best_item = find_best_match(item_name, self.all_items)
 
         return best_item if best_score > 50 else None
 
-    def get_item_parts(self, item_id: str) -> tuple[tuple[Any, ...], ...]:
-        return self._execute_query(self.GET_ITEMS_IN_SET_QUERY, item_id)
+    def get_item_parts(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id)
+
+    def add_item_alias(self, item_id, alias):
+        return self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias)
+
+    def add_word_alias(self, word, alias):
+        return self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias)
 
 
 def require_orders():
@@ -198,30 +229,109 @@ class MarketItem:
     asset_url: str = "https://warframe.market/static/assets"
 
     def __init__(self, database: MarketDatabase,
-                 item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str) -> None:
+                 item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
+                 fetch_orders: bool = True, fetch_parts: bool = True, fetch_part_orders: bool = True) -> None:
         self.database: MarketDatabase = database
         self.item_id: str = item_id
         self.item_name: str = item_name
         self.item_type: str = item_type
         self.item_url_name: str = item_url_name
         self.thumb: str = thumb
+        self.max_rank: str = max_rank
         self.thumb_url: str = f"{MarketItem.asset_url}/{self.thumb}"
         self.item_url: str = f"{MarketItem.base_url}/{self.item_url_name}"
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
         self.parts: List[MarketItem] = []
 
-    def filter_orders(self, order_type: str = 'sell', num_orders: int = 5, only_online: bool = True,
-                      subtype: str = None) \
+    @classmethod
+    async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
+                     item_url_name: str, thumb: str, max_rank: str, fetch_orders: bool = True,
+                     fetch_parts: bool = True, fetch_part_orders: bool = True):
+        obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank)
+
+        if fetch_orders:
+            await obj.get_orders()
+
+        if fetch_parts:
+            obj.get_parts()
+
+        if fetch_part_orders:
+            await obj.get_part_orders()
+
+        return obj
+
+    @staticmethod
+    def create_filters(**kwargs) -> Tuple[Dict[str, Union[int, str, List[int], List[str]]], Dict[str, str]]:
+        filters = {}
+        mode = {}
+
+        for key, value in kwargs.items():
+            if key.endswith('_mode'):
+                field = key[:-5]
+                mode[field] = value
+            else:
+                filters[key] = value
+
+        return filters, mode
+
+    def add_alias(self, alias: str) -> None:
+        self.database.add_item_alias(self.item_id, alias)
+
+    def filter_orders(self,
+                      order_type: str = 'sell',
+                      num_orders: int = 5,
+                      filters: Optional[Dict[str, Union[int, str, List[int], List[str]]]] = None,
+                      mode: Optional[Dict[str, str]] = None) \
             -> List[Dict[str, Union[str, int]]]:
+        """
+        Filters the orders based on the provided filters and mode dictionaries.
+
+        :param order_type: The type of orders to filter ('sell' or 'buy')
+        :param num_orders: The maximum number of orders to return after filtering
+        :param filters: A dictionary containing the fields to filter and their corresponding filter values.
+                        The keys are the field names and the values can be a string, a list of strings,
+                        an integer, or a list of integers.
+        :param mode: A dictionary containing the filtering mode for specific fields. The keys are the field names
+                     and the values are the modes ('whitelist', 'blacklist', 'greater', 'less', or 'equal').
+                     If not specified, the default mode for string-based fields is 'whitelist', while for
+                     integer-based fields, it is 'equal'.
+        :return: A list of filtered orders
+        """
+        if filters is None:
+            filters = {}
+
+        if mode is None:
+            mode = {}
+
+        def ensure_list(value):
+            return [value]
+
+        def apply_filter(value: Union[str, int], filter_value: Union[str, List, int], field: str):
+            if isinstance(filter_value, str):
+                filter_value = ensure_list(filter_value)
+
+            if filter_value is None:
+                return True
+            filter_mode = mode.get(field)
+
+            if isinstance(value, int):
+                if filter_mode == 'greater':
+                    return value > filter_value
+                elif filter_mode == 'less':
+                    return value < filter_value
+                else:
+                    return value == filter_value
+            else:
+                if filter_mode == 'blacklist':
+                    return value not in filter_value
+                else:
+                    return value in filter_value
+
         orders = self.orders[order_type]
 
-        if only_online:
-            orders = list(filter(lambda x: x['state'] == 'ingame', orders))
+        filtered_orders = [order for order in orders if all(apply_filter(order.get(key), filter_value, key) for key, filter_value in filters.items())]
 
-        if subtype is not None:
-            orders = list(filter(lambda x: x['subtype'] == subtype, orders))
-
-        return orders[:num_orders]
+        return filtered_orders[:num_orders]
 
     def parse_orders(self, orders: List[Dict[str, Any]]) -> None:
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
@@ -253,3 +363,10 @@ class MarketItem:
             return
 
         self.parse_orders(orders['payload']['orders'])
+
+    def get_parts(self) -> None:
+        self.parts = [MarketItem(self.database, *item) for item in self.database.get_item_parts(self.item_id)]
+
+    async def get_part_orders(self) -> None:
+        tasks = [part.get_orders() for part in self.parts]
+        await asyncio.gather(*tasks)

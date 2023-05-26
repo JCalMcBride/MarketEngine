@@ -1,3 +1,6 @@
+create database if not exists market;
+use market;
+
 drop table if exists item_statistics;
 drop table if exists item_subtypes;
 drop table if exists item_mod_ranks;
@@ -60,4 +63,17 @@ CREATE TABLE item_statistics
     mod_rank     INT                            DEFAULT NULL,
     donch_bot    DECIMAL(10, 2)                 DEFAULT NULL,
     donch_top    DECIMAL(10, 2)                 DEFAULT NULL
+);
+
+CREATE TABLE item_aliases (
+    item_id VARCHAR(255),
+    alias VARCHAR(255),
+    PRIMARY KEY (item_id, alias),
+    FOREIGN KEY (item_id) REFERENCES items (id)
+);
+
+CREATE TABLE word_aliases (
+    word VARCHAR(255),
+    alias VARCHAR(255),
+    PRIMARY KEY (word, alias)
 );
