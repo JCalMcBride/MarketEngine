@@ -111,7 +111,7 @@ async def fix(cache, session):
 def save_manifest(manifest_dict):
     for item in manifest_dict:
         with open(f"data/manifest_{item}.json", "w") as f:
-            json.dump(manifest_dict, f)
+            json.dump(manifest_dict[item], f)
 
 
 async def get_manifest():
@@ -139,8 +139,6 @@ async def get_manifest():
                 pass
             except ClientResponseError:
                 logger.error(f"Failed to fetch manifest {item}")
-
-        save_manifest(manifest_dict)
 
         return manifest_dict
 
@@ -173,6 +171,9 @@ async def get_price_history_dates(cache, session) -> set:
 
 def get_saved_data():
     saved_data = set()
+    if not os.path.exists("output"):
+        os.makedirs("output")
+
     for file in os.listdir("output"):
         if file.endswith(".json"):
             saved_data.add(file)
@@ -396,4 +397,3 @@ async def fetch_premade_item_data():
 
     # Return the JSON data as a tuple of named variables
     return items_data, item_ids_data, item_info_data
-
