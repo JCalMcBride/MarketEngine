@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='market-engine',
-    version='0.0.5',
+    version='0.0.6',
     description='Engine for easily getting the orders, statistics, and other stats from warframe.market.',
     author='Jacob McBride',
     author_email='jake55111@gmail.com',
