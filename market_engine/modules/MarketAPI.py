@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import lzma
 import os
+import traceback
 import uuid
 from asyncio import sleep
 from collections import defaultdict
 from json import JSONDecodeError
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List
 
-from aiohttp import ClientResponseError, ServerDisconnectedError
+from aiohttp import ClientResponseError
 from aiolimiter import AsyncLimiter
 from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from ..common import logger, session_manager, cache_manager
 
@@ -189,21 +192,36 @@ async def get_dates_to_fetch(cache, session):
     return date_list
 
 
-async def fetch_premade_statistics() -> None:
-    async def fetch_data(date):
+async def fetch_premade_statistics(item_ids) -> None:
+    with open('data/translation_dict.json', 'r') as f:
+        translation_dict = json.load(f)
+
+    async def fetch_data(date, session):
         url = f"https://relics.run/history/{date}"
 
-        try:
+        @retry(stop=stop_after_attempt(5), wait=wait_fixed(1))
+        async def make_request():
             async with session.get(url) as response:
                 response.raise_for_status()
-                data = await response.json()
-                logger.debug(f"Fetched data for {url}")
-        except ClientResponseError:
-            logger.error(f"Failed to fetch data for {date}")
+                return await response.json()
+
+        try:
+            data = await make_request()
+            logger.debug(f"Fetched data for {url}")
+        except Exception as e:
+            logger.error(f"Failed to fetch data for {date}: {str(e)}")
+            logger.error(traceback.format_exc())
             return
-        except ServerDisconnectedError:
-            logger.error(f"Failed to fetch data for {date}")
-            return
+
+        for item_name in data:
+            for day in data[item_name]:
+                if item_name in translation_dict:
+                    item_name = translation_dict[item_name]
+
+                if item_name in item_ids:
+                    day["item_id"] = item_ids[item_name]
+                else:
+                    day["item_id"] = hashlib.md5(item_name.encode()).hexdigest()
 
         with open(os.path.join('output', date), 'w') as f:
             json.dump(data, f)
@@ -212,7 +230,7 @@ async def fetch_premade_statistics() -> None:
         async with session_manager() as session:
             date_list = await get_dates_to_fetch(cache, session)
 
-            await asyncio.gather(*[fetch_data(date) for date in date_list])
+            await asyncio.gather(*[fetch_data(date, session) for date in date_list])
 
 
 async def fetch_set_data(url_name, cache, session):

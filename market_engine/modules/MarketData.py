@@ -5,6 +5,8 @@ import json
 from collections import defaultdict
 from functools import wraps
 from typing import List, Tuple, Optional, Dict, Any, Union
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import aiohttp
 import pymysql
@@ -139,6 +141,22 @@ class MarketDatabase:
 
     _ADD_WORD_ALIAS_QUERY: str = "INSERT INTO word_aliases (word, alias) VALUES (%s, %s)"
 
+    _GET_USER_QUERY = "SELECT ingame_name FROM market_users WHERE user_id=%s"
+    _UPSERT_USER_QUERY = """
+        INSERT INTO market_users (user_id, ingame_name) 
+        VALUES (%s, %s) 
+        ON DUPLICATE KEY UPDATE ingame_name=VALUES(ingame_name)
+    """
+    _INSERT_USERNAME_HISTORY_QUERY = """
+        INSERT INTO username_history (user_id, ingame_name, datetime) 
+        VALUES (%s, %s, %s)
+    """
+    _GET_CORRECT_CASE_QUERY = """
+        SELECT user_id, ingame_name
+        FROM market_users 
+        WHERE LOWER(ingame_name) = LOWER(%s)
+    """
+
     def __init__(self, user: str, password: str, host: str, database: str) -> None:
         self.connection: Connection = pymysql.connect(user=user,
                                                       password=password,
@@ -166,6 +184,18 @@ class MarketDatabase:
         with self.connection.cursor() as cursor:
             cursor.execute(query, params)
             return cursor.fetchall()
+
+    async def get_user(self, user: str) -> Optional[MarketUser]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(self._GET_CORRECT_CASE_QUERY, (user,))
+            result = cursor.fetchone()
+
+        if result is None:
+            # Username not found, return None
+            return None
+        else:
+            # Return the correct casing
+            return await MarketUser.create(self, result[0], result[1])
 
     async def get_item(self, item: str) -> Optional[MarketItem]:
         fuzzy_item = self._get_fuzzy_item(item)
@@ -199,6 +229,28 @@ class MarketDatabase:
 
     def add_word_alias(self, word, alias):
         return self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias)
+
+    def update_usernames(self, data: dict) -> None:
+        with ThreadPoolExecutor() as executor:
+            executor.submit(self._background_update_usernames, data)
+
+    def _background_update_usernames(self, data: dict) -> None:
+        with self.connection.cursor() as cursor:
+            for user_id, new_ingame_name in data.items():
+                cursor.execute(self._GET_USER_QUERY, (user_id,))
+                result = cursor.fetchone()
+
+                # If the user doesn't exist or username is different,
+                # update the user's username in `market_users` and add a record in `username_history`
+                if result is None or new_ingame_name != result[0]:
+                    logger.info(f"Updating username for user {user_id} to {new_ingame_name}")
+                    cursor.execute(self._UPSERT_USER_QUERY, (user_id, new_ingame_name))
+
+                    now = datetime.now()
+                    cursor.execute(self._INSERT_USERNAME_HISTORY_QUERY, (user_id, new_ingame_name, now))
+
+            # Commit your changes
+            self.connection.commit()
 
 
 def require_orders():
@@ -339,9 +391,13 @@ class MarketItem:
 
     def parse_orders(self, orders: List[Dict[str, Any]]) -> None:
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
+        users = {}
+
         for order in orders:
             order_type = order['order_type']
             user = order['user']
+            users[user['id']] = user['ingame_name']
+
             parsed_order = {
                 'last_update': order['last_update'],
                 'quantity': order['quantity'],
@@ -361,6 +417,8 @@ class MarketItem:
         for key, reverse in [('sell', False), ('buy', True)]:
             self.orders[key].sort(key=lambda x: (x['price'], x['last_update']), reverse=reverse)
 
+        self.database.update_usernames(users)
+
     async def get_orders(self) -> None:
         orders = await fetch_wfm_data(f"{self.base_api_url}/items/{self.item_url_name}/orders")
         if orders is None:
@@ -374,3 +432,108 @@ class MarketItem:
     async def get_part_orders(self) -> None:
         tasks = [part.get_orders() for part in self.parts]
         await asyncio.gather(*tasks)
+
+
+class MarketUser:
+    base_api_url: str = "https://api.warframe.market/v1"
+    base_url: str = "https://warframe.market/profile"
+    asset_url: str = "https://warframe.market/static/assets"
+
+    def __init__(self, database: MarketDatabase, user_id: int, username: str):
+        self.database = database
+        self.user_id = user_id
+        self.username = username
+        self.profile_url: str = f"{MarketUser.base_url}/{self.username}"
+        self.last_seen = None
+        self.avatar = None
+        self.avatar_url = None
+        self.locale = None
+        self.background = None
+        self.about = None
+        self.reputation = None
+        self.platform = None
+        self.banned = None
+        self.status = None
+        self.region = None
+        self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
+        self.reviews: Dict[str, List[Dict[str, Union[str, int]]]] = []
+
+    @classmethod
+    async def create(cls, database: MarketDatabase, user_id: str, username: str,
+                     fetch_user_data: bool = True, fetch_orders: bool = True, fetch_reviews: bool = True):
+        obj = cls(database, user_id, username)
+
+        if fetch_user_data:
+            await obj.fetch_user_data()
+
+        if fetch_orders:
+            await obj.fetch_orders()
+
+        if fetch_reviews:
+            await obj.fetch_reviews()
+
+        return obj
+
+    async def fetch_user_data(self) -> None:
+        user_data = await fetch_wfm_data(f"{self.base_api_url}/profile/{self.username}")
+        if user_data is None:
+            return
+
+        # Load the user profile
+        profile = user_data['payload']['profile']
+
+        for key, value in profile.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+        if self.avatar is not None:
+            self.avatar_url = f"{MarketUser.asset_url}/{self.avatar}"
+
+    def parse_orders(self, orders: List[Dict[str, Any]]) -> None:
+        self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
+
+        for order_type in ['sell_orders', 'buy_orders']:
+            for order in orders[order_type]:
+                parsed_order = {
+                    'item': order['item']['en']['item_name'],
+                    'last_update': order['last_update'],
+                    'quantity': order['quantity'],
+                    'price': order['platinum'],
+                }
+
+                if 'subtype' in order:
+                    parsed_order['subtype'] = order['subtype']
+
+                if 'mod_rank' in order:
+                    parsed_order['subtype'] = f"R{order['mod_rank']}"
+
+                self.orders[order_type.split('_')[0]].append(parsed_order)
+
+    def parse_reviews(self, reviews: List[Dict[str, Any]]) -> None:
+        for review in reviews:
+            parsed_review = {
+                'user': review['user_from']['ingame_name'],
+                'user_id': review['user_from']['id'],
+                'user_avatar': review['user_from']['avatar'],
+                'user_region': review['user_from']['region'],
+                'text': review['text'],
+                'date': review['date'],
+            }
+
+            if parsed_review not in self.reviews:
+                self.reviews.append(parsed_review)
+
+    async def fetch_orders(self) -> None:
+        orders = await fetch_wfm_data(f"{self.base_api_url}/profile/{self.username}/orders")
+        if orders is None:
+            return
+
+        self.parse_orders(orders['payload'])
+
+    async def fetch_reviews(self, page_num: str = '1') -> None:
+        reviews = await fetch_wfm_data(f"{self.base_api_url}/profile/{self.username}/reviews/{page_num}")
+
+        if reviews is None:
+            return
+
+        self.parse_reviews(reviews['payload']['reviews'])
