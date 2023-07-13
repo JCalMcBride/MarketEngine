@@ -11,7 +11,8 @@ from datetime import datetime
 import aiohttp
 import pymysql
 from fuzzywuzzy import fuzz
-from pymysql import Connection
+from pymysql import Connection, InterfaceError
+from pymysql.cursors import Cursor
 
 from ..common import cache_manager, logger, session_manager, rate_limiter
 
@@ -180,15 +181,16 @@ class MarketDatabase:
 
         return all_items
 
-    def _execute_query(self, query: str, *params) -> Tuple[Tuple[Any, ...], ...]:
+    def _execute_query(self, query: str, *params) -> Cursor:
+        self.connection.ping(reconnect=True)
+
         with self.connection.cursor() as cursor:
             cursor.execute(query, params)
-            return cursor.fetchall()
+            return cursor
 
     async def get_user(self, user: str) -> Optional[MarketUser]:
-        with self.connection.cursor() as cursor:
-            cursor.execute(self._GET_CORRECT_CASE_QUERY, (user,))
-            result = cursor.fetchone()
+        cursor = self._execute_query(self._GET_CORRECT_CASE_QUERY, user)
+        result = cursor.fetchone()
 
         if result is None:
             # Username not found, return None
@@ -197,7 +199,8 @@ class MarketDatabase:
             # Return the correct casing
             return await MarketUser.create(self, result[0], result[1])
 
-    async def get_item(self, item: str) -> Optional[MarketItem]:
+    async def get_item(self, item: str, fetch_orders: bool = True,
+                       fetch_parts: bool = True, fetch_part_orders: bool = True) -> Optional[MarketItem]:
         fuzzy_item = self._get_fuzzy_item(item)
 
         if fuzzy_item is None:
@@ -205,13 +208,16 @@ class MarketDatabase:
 
         item_data: List[str] = list(fuzzy_item.values())
 
-        return await MarketItem.create(self, *item_data)
+        return await MarketItem.create(self, *item_data,
+                                       fetch_parts=fetch_parts,
+                                       fetch_orders=fetch_orders,
+                                       fetch_part_orders=fetch_part_orders)
 
     def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
-        return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id)
+        return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id).fetchall()
 
     def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
-        return self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id)
+        return self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id).fetchall()
 
     def close(self) -> None:
         self.connection.close()
@@ -222,7 +228,7 @@ class MarketDatabase:
         return best_item if best_score > 50 else None
 
     def get_item_parts(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
-        return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id)
+        return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id).fetchall()
 
     def add_item_alias(self, item_id, alias):
         return self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias)
@@ -235,19 +241,17 @@ class MarketDatabase:
             executor.submit(self._background_update_usernames, data)
 
     def _background_update_usernames(self, data: dict) -> None:
-        with self.connection.cursor() as cursor:
-            for user_id, new_ingame_name in data.items():
-                cursor.execute(self._GET_USER_QUERY, (user_id,))
-                result = cursor.fetchone()
+        for user_id, new_ingame_name in data.items():
+            result = self._execute_query(self._GET_USER_QUERY, user_id).fetchone()
 
-                # If the user doesn't exist or username is different,
-                # update the user's username in `market_users` and add a record in `username_history`
-                if result is None or new_ingame_name != result[0]:
-                    logger.info(f"Updating username for user {user_id} to {new_ingame_name}")
-                    cursor.execute(self._UPSERT_USER_QUERY, (user_id, new_ingame_name))
+            # If the user doesn't exist or username is different,
+            # update the user's username in `market_users` and add a record in `username_history`
+            if result is None or new_ingame_name != result[0]:
+                logger.info(f"Updating username for user {user_id} to {new_ingame_name}")
+                self._execute_query(self._UPSERT_USER_QUERY, user_id, new_ingame_name)
 
-                    now = datetime.now()
-                    cursor.execute(self._INSERT_USERNAME_HISTORY_QUERY, (user_id, new_ingame_name, now))
+                now = datetime.now()
+                self._execute_query(self._INSERT_USERNAME_HISTORY_QUERY, user_id, new_ingame_name, now)
 
             # Commit your changes
             self.connection.commit()
@@ -297,6 +301,7 @@ class MarketItem:
         self.item_url: str = f"{MarketItem.base_url}/{self.item_url_name}"
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
         self.parts: List[MarketItem] = []
+        self.part_orders_fetched: bool = False
 
     @classmethod
     async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
@@ -304,14 +309,18 @@ class MarketItem:
                      fetch_parts: bool = True, fetch_part_orders: bool = True):
         obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank)
 
+        tasks = []
         if fetch_orders:
-            await obj.get_orders()
+            tasks.append(obj.get_orders())
 
         if fetch_parts:
-            obj.get_parts()
+            tasks.append(obj.get_parts())
 
         if fetch_part_orders:
-            await obj.get_part_orders()
+            tasks += [part.get_orders() for part in obj.parts]
+            obj.part_orders_fetched = True
+
+        await asyncio.gather(*tasks)
 
         return obj
 
@@ -429,10 +438,6 @@ class MarketItem:
     def get_parts(self) -> None:
         self.parts = [MarketItem(self.database, *item) for item in self.database.get_item_parts(self.item_id)]
 
-    async def get_part_orders(self) -> None:
-        tasks = [part.get_orders() for part in self.parts]
-        await asyncio.gather(*tasks)
-
 
 class MarketUser:
     base_api_url: str = "https://api.warframe.market/v1"
@@ -496,6 +501,8 @@ class MarketUser:
             for order in orders[order_type]:
                 parsed_order = {
                     'item': order['item']['en']['item_name'],
+                    'item_url_name': order['item']['url_name'],
+                    'item_id': order['item']['id'],
                     'last_update': order['last_update'],
                     'quantity': order['quantity'],
                     'price': order['platinum'],
