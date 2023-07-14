@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections import defaultdict
 from functools import wraps
-from typing import List, Tuple, Optional, Dict, Any, Union
+from typing import List, Tuple, Optional, Dict, Any, Union, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -92,13 +92,12 @@ def replace_aliases(name: str, aliases: dict, threshold=80) -> str:
     return ' '.join(new_words)
 
 
-def find_best_match(item_name: str, items: List[Dict[str, Any]]) -> Tuple[int, Optional[Dict[str, str]]]:
+def find_best_match(item_name: str, items: List[Dict[str, Any]], word_aliases: List) -> Tuple[
+    int, Optional[Dict[str, str]]]:
     best_score, best_item = 0, None
     common_words = {'arcane', 'prime', 'scene', 'set'}
-    aliases = {'head': 'neuroptics',
-               'taserman': 'volt'}
 
-    item_name = replace_aliases(item_name, aliases)
+    item_name = replace_aliases(item_name, word_aliases)
     item_name = remove_common_words(item_name, common_words)
 
     for item in items:
@@ -126,19 +125,24 @@ class MarketDatabase:
                                    "AND order_type='closed' "
                                    "AND item_id = %s")
     _BASE_ITEMS_QUERY: str = ("SELECT items.id, items.item_name, items.item_type, "
-                              "items.url_name, items.thumb, items.max_rank, item_aliases.alias")
+                              "items.url_name, items.thumb, items.max_rank, GROUP_CONCAT(item_aliases.alias) AS aliases")
 
     _GET_ALL_ITEMS_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
-                                 "FROM items LEFT JOIN item_aliases ON items.id = item_aliases.item_id")
+                                 "FROM items LEFT JOIN item_aliases ON items.id = item_aliases.item_id "
+                                 "GROUP BY items.id")
 
     _GET_ITEMS_IN_SET_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
                                     "FROM items_in_set "
                                     "INNER JOIN items "
                                     "ON items_in_set.item_id = items.id "
                                     "LEFT JOIN item_aliases ON items.id = item_aliases.item_id "
-                                    "WHERE items_in_set.set_id = %s")
+                                    "WHERE items_in_set.set_id = %s "
+                                    "GROUP BY items.id, items.item_name, items.item_type, items.url_name, items.thumb, items.max_rank")
+
+    _GET_ALL_WORD_ALIASES_QUERY: str = "SELECT alias, word FROM word_aliases"
 
     _ADD_ITEM_ALIAS_QUERY: str = "INSERT INTO item_aliases (item_id, alias) VALUES (%s, %s)"
+    _REMOVE_ITEM_ALIAS_QUERY: str = "DELETE FROM item_aliases WHERE item_id=%s AND alias=%s"
 
     _ADD_WORD_ALIAS_QUERY: str = "INSERT INTO word_aliases (word, alias) VALUES (%s, %s)"
 
@@ -169,15 +173,14 @@ class MarketDatabase:
     def _get_all_items(self) -> List[dict]:
         all_data = self._execute_query(self._GET_ALL_ITEMS_QUERY)
 
-        item_dict = defaultdict(lambda: defaultdict(list))
+        all_items: List[dict] = []
         for item_id, item_name, item_type, url_name, thumb, max_rank, alias in all_data:
-            if not item_dict[item_id]['item_data']:
-                item_dict[item_id]['item_data'] = {'id': item_id, 'item_name': item_name, 'item_type': item_type,
-                                                   'url_name': url_name, 'thumb': thumb, 'max_rank': max_rank}
+            aliases = []
             if alias:
-                item_dict[item_id]['aliases'].append(alias)
+                aliases = alias.split(',')
 
-        all_items: List[dict] = [item_data['item_data'] for item_data in item_dict.values()]
+            all_items.append({'id': item_id, 'item_name': item_name, 'item_type': item_type,
+                              'url_name': url_name, 'thumb': thumb, 'max_rank': max_rank, 'aliases': aliases})
 
         return all_items
 
@@ -223,15 +226,21 @@ class MarketDatabase:
         self.connection.close()
 
     def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
-        best_score, best_item = find_best_match(item_name, self.all_items)
+        best_score, best_item = find_best_match(item_name, self.all_items, self.get_word_aliases())
 
         return best_item if best_score > 50 else None
 
     def get_item_parts(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
         return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id).fetchall()
 
+    def get_word_aliases(self) -> Dict[str, str]:
+        return dict(self._execute_query(self._GET_ALL_WORD_ALIASES_QUERY).fetchall())
+
     def add_item_alias(self, item_id, alias):
         return self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias)
+
+    def remove_item_alias(self, item_id, alias):
+        return self._execute_query(self._REMOVE_ITEM_ALIAS_QUERY, item_id, alias)
 
     def add_word_alias(self, word, alias):
         return self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias)
@@ -289,7 +298,7 @@ class MarketItem:
 
     def __init__(self, database: MarketDatabase,
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
-                 fetch_orders: bool = True, fetch_parts: bool = True, fetch_part_orders: bool = True) -> None:
+                 aliases: List, fetch_orders: bool = True, fetch_parts: bool = True, fetch_part_orders: bool = True) -> None:
         self.database: MarketDatabase = database
         self.item_id: str = item_id
         self.item_name: str = item_name
@@ -297,6 +306,7 @@ class MarketItem:
         self.item_url_name: str = item_url_name
         self.thumb: str = thumb
         self.max_rank: str = max_rank
+        self.aliases: List = aliases
         self.thumb_url: str = f"{MarketItem.asset_url}/{self.thumb}"
         self.item_url: str = f"{MarketItem.base_url}/{self.item_url_name}"
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
@@ -305,20 +315,19 @@ class MarketItem:
 
     @classmethod
     async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
-                     item_url_name: str, thumb: str, max_rank: str, fetch_orders: bool = True,
+                     item_url_name: str, thumb: str, max_rank: str, aliases: List, fetch_orders: bool = True,
                      fetch_parts: bool = True, fetch_part_orders: bool = True):
-        obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank)
+        obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank, aliases)
 
         tasks = []
         if fetch_orders:
             tasks.append(obj.get_orders())
 
         if fetch_parts:
-            tasks.append(obj.get_parts())
+            obj.get_parts()
 
         if fetch_part_orders:
-            tasks += [part.get_orders() for part in obj.parts]
-            obj.part_orders_fetched = True
+            tasks += obj.get_part_orders_tasks()
 
         await asyncio.gather(*tasks)
 
@@ -338,8 +347,17 @@ class MarketItem:
 
         return filters, mode
 
+    def get_part_orders_tasks(self) -> list[Coroutine[Any, Any, None]]:
+        tasks = [part.get_orders() for part in self.parts if part is not None]
+        self.part_orders_fetched = True
+
+        return tasks
+
     def add_alias(self, alias: str) -> None:
         self.database.add_item_alias(self.item_id, alias)
+
+    def remove_alias(self, alias: str) -> None:
+        self.database.remove_item_alias(self.item_id, alias)
 
     def filter_orders(self,
                       order_type: str = 'sell',
