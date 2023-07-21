@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import defaultdict
+from datetime import datetime
 from functools import wraps
 from typing import List, Tuple, Optional, Dict, Any, Union, Coroutine
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 import aiohttp
-import aiomysql as aiomysql
+import pymysql
 from fuzzywuzzy import fuzz
-from pymysql import Connection, InterfaceError
-from pymysql.cursors import Cursor
+from pymysql import Connection
 
 from ..common import cache_manager, logger, session_manager, rate_limiter
 
@@ -149,8 +146,8 @@ class MarketDatabase:
     _GET_USER_QUERY = "SELECT ingame_name FROM market_users WHERE user_id=%s"
     _UPSERT_USER_QUERY = """
         INSERT INTO market_users (user_id, ingame_name) 
-        VALUES (%s, %s) AS new
-        ON DUPLICATE KEY UPDATE ingame_name=new.ingame_name
+        VALUES (%s, %s) 
+        ON DUPLICATE KEY UPDATE ingame_name=VALUES(ingame_name)
     """
     _INSERT_USERNAME_HISTORY_QUERY = """
         INSERT INTO username_history (user_id, ingame_name, datetime) 
@@ -180,38 +177,35 @@ class MarketDatabase:
         AND order_type='closed'
     """
 
-    def __init__(self) -> None:
-        self.pool = None
-        self.all_items = None
+    def __init__(self, user: str, password: str, host: str, database: str) -> None:
+        self.connection: Connection = pymysql.connect(user=user,
+                                                      password=password,
+                                                      host=host,
+                                                      database=database)
 
-    @classmethod
-    async def connect(cls, user: str, password: str, host: str, database: str) -> 'MarketDatabase':
-        self = cls()
-        self.pool = await aiomysql.create_pool(user=user, password=password, host=host, db=database)
+        self.all_items = self._get_all_items()
+        self.users: Dict[str, str] = {}
 
-        self.all_items = await self._get_all_items()
+    def _execute_query(self, query: str, *params, fetch: str = 'all',
+                       commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
+        self.connection.ping(reconnect=True)
 
-        return self
+        with self.connection.cursor() as cur:
+            if many:
+                cur.executemany(query, params[0])
+            else:
+                cur.execute(query, params)
 
-    async def _execute_query(self, query: str, *params: Union[tuple, List[tuple]], fetch: str = 'all',
-                             commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
-        async with self.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                if many:
-                    await cur.executemany(query, params[0])
-                else:
-                    await cur.execute(query, params)
+            if commit:
+                self.connection.commit()
 
-                if commit:
-                    await conn.commit()
+            if fetch == 'one':
+                return cur.fetchone()
+            elif fetch == 'all':
+                return cur.fetchall()
 
-                if fetch == 'one':
-                    return await cur.fetchone()
-                elif fetch == 'all':
-                    return await cur.fetchall()
-
-    async def _get_all_items(self) -> List[dict]:
-        all_data = await self._execute_query(self._GET_ALL_ITEMS_QUERY, fetch='all')
+    def _get_all_items(self) -> List[dict]:
+        all_data = self._execute_query(self._GET_ALL_ITEMS_QUERY)
 
         all_items: List[dict] = []
         for item_id, item_name, item_type, url_name, thumb, max_rank, alias in all_data:
@@ -228,21 +222,32 @@ class MarketDatabase:
                        fetch_user_data: bool = True,
                        fetch_orders: bool = True,
                        fetch_reviews: bool = True) -> Optional[MarketUser]:
-        result = await self._execute_query(self._GET_CORRECT_CASE_QUERY, user, fetch='one')
+        result = self._execute_query(self._GET_CORRECT_CASE_QUERY, user, fetch='one')
 
         if result is None:
-            # Username not found, return None
-            return None
+            # Username not found, attempt to fetch from API
+            profile = await MarketUser.fetch_user_data(user)
+
+            if profile is None:
+                return None
+
+            user_id = profile['id']
+            username = profile['ingame_name']
+
+            self.users[user_id] = username
         else:
-            # Return the correct casing
-            return await MarketUser.create(self, result[0], result[1],
-                                           fetch_user_data=fetch_user_data,
-                                           fetch_orders=fetch_orders,
-                                           fetch_reviews=fetch_reviews)
+            user_id, username = result
+
+        # Return the correct casing
+        return await MarketUser.create(self, user_id, username,
+                                       fetch_user_data=fetch_user_data,
+                                       fetch_orders=fetch_orders,
+                                       fetch_reviews=fetch_reviews)
 
     async def get_item(self, item: str, fetch_orders: bool = True,
-                       fetch_parts: bool = True, fetch_part_orders: bool = True) -> Optional[MarketItem]:
-        fuzzy_item = await self._get_fuzzy_item(item)
+                       fetch_parts: bool = True, fetch_part_orders: bool = True,
+                       fetch_price_history: bool = True, fetch_demand_history: bool = True) -> Optional[MarketItem]:
+        fuzzy_item = self._get_fuzzy_item(item)
 
         if fuzzy_item is None:
             return None
@@ -252,51 +257,56 @@ class MarketDatabase:
         return await MarketItem.create(self, *item_data,
                                        fetch_parts=fetch_parts,
                                        fetch_orders=fetch_orders,
-                                       fetch_part_orders=fetch_part_orders)
+                                       fetch_part_orders=fetch_part_orders,
+                                       fetch_price_history=fetch_price_history,
+                                       fetch_demand_history=fetch_demand_history)
 
-    async def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
-        return await self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
+    def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
 
-    async def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
-        return await self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, fetch='all')
+    def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, fetch='all')
 
-    async def get_item_price_history(self, item_id: str) -> Dict[str, str]:
-        return dict(await self._execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, fetch='all'))
+    def get_item_price_history(self, item_id: str) -> Dict[str, str]:
+        return dict(self._execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, fetch='all'))
 
-    async def get_item_demand_history(self, item_id: str) -> Dict[str, str]:
-        return dict(await self._execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, fetch='all'))
+    def get_item_demand_history(self, item_id: str) -> Dict[str, str]:
+        return dict(self._execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, fetch='all'))
 
-    async def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
-        best_score, best_item = find_best_match(item_name, self.all_items, await self.get_word_aliases())
+    def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
+        best_score, best_item = find_best_match(item_name, self.all_items, self.get_word_aliases())
 
         return best_item if best_score > 50 else None
 
-    async def get_item_parts(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
-        return await self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id, fetch='all')
+    def get_item_parts(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
+        return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id, fetch='all')
 
-    async def get_word_aliases(self) -> Dict[str, str]:
-        return dict(await self._execute_query(self._GET_ALL_WORD_ALIASES_QUERY, fetch='all'))
+    def get_word_aliases(self) -> Dict[str, str]:
+        return dict(self._execute_query(self._GET_ALL_WORD_ALIASES_QUERY, fetch='all'))
 
     async def add_item_alias(self, item_id, alias):
-        await self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
-        self.all_items = await self._get_all_items()
+        self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
+        self.all_items = self._get_all_items()
 
-    async def remove_item_alias(self, item_id, alias):
-        await self._execute_query(self._REMOVE_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
+    def remove_item_alias(self, item_id, alias):
+        self._execute_query(self._REMOVE_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
         self.all_items = self._get_all_items()
 
     async def add_word_alias(self, word, alias):
-        await self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias, commit=True)
+        self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias, commit=True)
 
-    async def update_usernames(self, data: dict) -> None:
+    def update_usernames(self) -> None:
         # Fetch all user data first
-        user_data = dict(await self._execute_query(self._FETCH_ALL_USERS_QUERY, fetch='all'))
+        user_data = dict(self._execute_query(self._FETCH_ALL_USERS_QUERY, fetch='all'))
 
         # Prepare batch queries
         update_queries = []
         history_queries = []
         now = datetime.now()
-        for user_id, new_ingame_name in data.items():
+
+        users = self.users.copy()
+        self.users.clear()
+        for user_id, new_ingame_name in users.items():
             current_ingame_name = user_data.get(user_id)
 
             # If the user doesn't exist or username is different,
@@ -309,11 +319,10 @@ class MarketDatabase:
 
         # Execute the queries
         if update_queries:
-            await self._execute_query(self._UPSERT_USER_QUERY, update_queries, commit=True, many=True)
+            self._execute_query(self._UPSERT_USER_QUERY, update_queries, commit=True, many=True)
 
         if history_queries:
-            await self._execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)
-
+            self._execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)
 
 
 def require_orders():
@@ -348,7 +357,8 @@ class MarketItem:
 
     def __init__(self, database: MarketDatabase,
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
-                 aliases: List, fetch_orders: bool = True, fetch_parts: bool = True, fetch_part_orders: bool = True) -> None:
+                 aliases: List, fetch_orders: bool = True, fetch_parts: bool = True,
+                 fetch_part_orders: bool = True) -> None:
         self.database: MarketDatabase = database
         self.item_id: str = item_id
         self.item_name: str = item_name
@@ -379,7 +389,7 @@ class MarketItem:
             tasks.append(obj.get_orders())
 
         if fetch_parts:
-            tasks.append(obj.get_parts())
+            obj.get_parts()
 
         if fetch_part_orders:
             tasks += obj.get_part_orders_tasks()
@@ -387,18 +397,18 @@ class MarketItem:
             if fetch_price_history:
                 for part in obj.parts:
                     if part is not None:
-                        await part.get_price_history()
+                        part.get_price_history()
 
             if fetch_demand_history:
                 for part in obj.parts:
                     if part is not None:
-                        await part.get_demand_history()
+                        part.get_demand_history()
 
         if fetch_price_history:
-            await obj.get_price_history()
+            obj.get_price_history()
 
         if fetch_demand_history:
-            await obj.get_demand_history()
+            obj.get_demand_history()
 
         await asyncio.gather(*tasks)
 
@@ -418,23 +428,31 @@ class MarketItem:
 
         return filters, mode
 
+    def get_subtypes(self, order_type: str = 'sell') -> List[str]:
+        subtypes = []
+        for order in self.orders[order_type]:
+            if 'subtype' in order and order['subtype'] not in subtypes and order['state'] == 'ingame':
+                subtypes.append(order['subtype'])
+
+        return subtypes
+
     def get_part_orders_tasks(self) -> list[Coroutine[Any, Any, None]]:
         tasks = [part.get_orders() for part in self.parts if part is not None]
         self.part_orders_fetched = True
 
         return tasks
 
-    async def get_price_history(self) -> None:
-        self.price_history = await self.database.get_item_price_history(self.item_id)
+    def get_price_history(self) -> None:
+        self.price_history = self.database.get_item_price_history(self.item_id)
 
-    async def get_demand_history(self) -> None:
-        self.demand_history = await self.database.get_item_demand_history(self.item_id)
+    def get_demand_history(self) -> None:
+        self.demand_history = self.database.get_item_demand_history(self.item_id)
 
-    async def add_alias(self, alias: str) -> None:
-        await self.database.add_item_alias(self.item_id, alias)
+    def add_alias(self, alias: str) -> None:
+        self.database.add_item_alias(self.item_id, alias)
 
-    async def remove_alias(self, alias: str) -> None:
-        await self.database.remove_item_alias(self.item_id, alias)
+    def remove_alias(self, alias: str) -> None:
+        self.database.remove_item_alias(self.item_id, alias)
 
     def filter_orders(self,
                       order_type: str = 'sell',
@@ -519,9 +537,12 @@ class MarketItem:
             self.orders[order_type].append(parsed_order)
 
         for key, reverse in [('sell', False), ('buy', True)]:
-            self.orders[key].sort(key=lambda x: (x['price'], x['last_update']), reverse=reverse)
+            # First sort by 'last_update' in descending order
+            self.orders[key] = sorted(self.orders[key], key=lambda x: x['last_update'], reverse=True)
+            # Then sort by 'price' according to the 'reverse' flag
+            self.orders[key] = sorted(self.orders[key], key=lambda x: x['price'], reverse=reverse)
 
-        await self.database.update_usernames(users)
+        self.database.users.update(users)
 
     async def get_orders(self) -> None:
         orders = await fetch_wfm_data(f"{self.base_api_url}/items/{self.item_url_name}/orders")
@@ -530,8 +551,8 @@ class MarketItem:
 
         await self.parse_orders(orders['payload']['orders'])
 
-    async def get_parts(self) -> None:
-        self.parts = [MarketItem(self.database, *item) for item in await self.database.get_item_parts(self.item_id)]
+    def get_parts(self) -> None:
+        self.parts = [MarketItem(self.database, *item) for item in self.database.get_item_parts(self.item_id)]
 
 
 class MarketUser:
@@ -565,7 +586,9 @@ class MarketUser:
 
         tasks = []
         if fetch_user_data:
-            tasks.append(obj.fetch_user_data())
+            profile = await MarketUser.fetch_user_data(username)
+            if profile is not None:
+                obj.set_user_data(profile)
 
         if fetch_orders:
             tasks.append(obj.fetch_orders())
@@ -577,14 +600,22 @@ class MarketUser:
 
         return obj
 
-    async def fetch_user_data(self) -> None:
-        user_data = await fetch_wfm_data(f"{self.base_api_url}/profile/{self.username}")
+    @staticmethod
+    async def fetch_user_data(username) -> Union[None, Dict]:
+        user_data = await fetch_wfm_data(f"{MarketUser.base_api_url}/profile/{username}")
         if user_data is None:
             return
 
         # Load the user profile
-        profile = user_data['payload']['profile']
 
+        try:
+            profile = user_data['payload']['profile']
+        except KeyError:
+            return
+
+        return profile
+
+    def set_user_data(self, profile: Dict[str, Any]) -> None:
         for key, value in profile.items():
             if hasattr(self, key):
                 setattr(self, key, value)

@@ -36,9 +36,13 @@ def get_cached_data(cache, url: str) -> Any | None:
     return None
 
 
-async def fetch_api_data(cache, session, url: str) -> Dict[str, Any]:
+async def fetch_api_data(cache, session, url: str, headers: dict = None) -> Dict[str, Any]:
+    if headers is None:
+        headers = {}
+
     # Check if the data is in the cache
-    data = get_cached_data(cache, url)
+    print(url + str(headers))
+    data = get_cached_data(cache, url + str(headers))
     if data is not None:
         return json.loads(data)
 
@@ -48,13 +52,13 @@ async def fetch_api_data(cache, session, url: str) -> Dict[str, Any]:
     while True:
         # Make the API request
         try:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers) as response:
                 response.raise_for_status()
                 data = await response.json()
                 logger.debug(f"Fetched data for {url}")
 
                 # Store the data in the cache with a 24-hour expiration
-                cache.set(url, json.dumps(data), ex=24 * 60 * 60)
+                cache.set(url + str(headers), json.dumps(data), ex=24 * 60 * 60)
 
                 return data
         except ClientResponseError:
@@ -279,7 +283,7 @@ def save_item_info(item_info):
         json.dump(item_info, f)
 
 
-async def fetch_and_save_statistics(items, item_ids) -> tuple[
+async def fetch_and_save_statistics(items, item_ids, platform: str = 'pc', directory='output') -> tuple[
     defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
         str, defaultdict[Any, list] | defaultdict[str, list]], dict[Any, Any]]:
     async with cache_manager() as cache:
@@ -288,8 +292,8 @@ async def fetch_and_save_statistics(items, item_ids) -> tuple[
                 translation_dict = json.load(f)
 
             price_history_dict, item_info = await process_price_history(cache, session, items, translation_dict,
-                                                                        item_ids)
-            save_price_history(price_history_dict)
+                                                                        item_ids, platform)
+            save_price_history(price_history_dict, platform=platform, directory=directory)
             save_item_info(item_info)
 
     return price_history_dict, item_info
@@ -319,14 +323,14 @@ def parse_item_info(item_info):
 
 
 async def process_price_history(cache, session, items: List[Dict[str, Any]], translation_dict: Dict[str, str],
-                                item_ids: Dict[str, str]) -> \
+                                item_ids: Dict[str, str], platform: str = 'pc') -> \
         tuple[defaultdict[Any, defaultdict[Any, list] | defaultdict[str, list]] | defaultdict[
             str, defaultdict[Any, list] | defaultdict[str, list]], dict[Any, Any]]:
     price_history_dict = defaultdict(lambda: defaultdict(list))
     item_info = {}
 
-    async def fetch_and_process_item_statistics(item):
-        api_data = await fetch_item_statistics(cache, session, item["url_name"])
+    async def fetch_and_process_item_statistics(item, platform):
+        api_data = await fetch_item_statistics(cache, session, item["url_name"], platform)
         price_history = api_data["payload"]
         logger.info(f"Processing {item['item_name']}")
         item_info[item['id']] = parse_item_info(api_data["include"]["item"])
@@ -345,7 +349,7 @@ async def process_price_history(cache, session, items: List[Dict[str, Any]], tra
 
                 price_history_dict[date][item_name].append(price_history_day)
 
-    await asyncio.gather(*[fetch_and_process_item_statistics(item) for item in items])
+    await asyncio.gather(*[fetch_and_process_item_statistics(item, platform) for item in items])
 
     return price_history_dict, item_info
 
@@ -380,15 +384,23 @@ async def fetch_and_save_items_and_ids():
     return items, item_ids
 
 
-async def fetch_item_statistics(cache, session, item_url_name: str) -> Dict[str, Any]:
+async def fetch_item_statistics(cache, session, item_url_name: str, platform: str = 'pc') -> Dict[str, Any]:
     url = f"{API_BASE_URL}{STATISTICS_ENDPOINT.format(item_url_name)}?include=item"
-    return await fetch_api_data(cache, session, url)
+
+    headers = {'platform': platform, 'language': 'en'}
+
+    return await fetch_api_data(cache, session, url, headers)
 
 
 def save_price_history(price_history_dict: Dict[str, Dict[str, List[Dict[str, Any]]]],
-                       directory: str = "output"):
+                       directory: str = "output", platform: str = 'pc'):
+    if platform == 'pc':
+        platform = ''
+    else:
+        platform = f"/{platform}"
+
     for day, history in price_history_dict.items():
-        filename = f"{directory}/price_history_{day}.json"
+        filename = f"{directory}{platform}/price_history_{day}.json"
         if not os.path.isfile(filename):
             with open(filename, "w") as fp:
                 json.dump(history, fp)
