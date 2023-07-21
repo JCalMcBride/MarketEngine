@@ -14,9 +14,11 @@ from pymysql import Connection
 from ..common import cache_manager, logger, session_manager, rate_limiter
 
 
-async def fetch_wfm_data(url: str):
+async def fetch_wfm_data(url: str, platform: str = 'pc') -> Dict[str, Any]:
+    headers = {'platform': platform, 'language': 'en'}
+
     async with cache_manager() as cache:
-        data = cache.get(url)
+        data = cache.get(url + str(headers))
         if data is not None:
             logger.debug(f"Using cached data for {url}")
             return json.loads(data)
@@ -26,13 +28,13 @@ async def fetch_wfm_data(url: str):
         for _ in range(retries):
             try:
                 async with rate_limiter:
-                    async with session.get(url) as r:
+                    async with session.get(url, headers=headers) as r:
                         if r.status == 200:
                             logger.info(f"Fetched data from {url}")
                             data = await r.json()
 
                             # Store the data in the cache with a 15-second expiration
-                            cache.set(url, json.dumps(data), ex=15)
+                            cache.set(url + str(headers), json.dumps(data), ex=15)
 
                             return await r.json()
                         else:
@@ -246,7 +248,8 @@ class MarketDatabase:
 
     async def get_item(self, item: str, fetch_orders: bool = True,
                        fetch_parts: bool = True, fetch_part_orders: bool = True,
-                       fetch_price_history: bool = True, fetch_demand_history: bool = True) -> Optional[MarketItem]:
+                       fetch_price_history: bool = True, fetch_demand_history: bool = True,
+                       platform: str = 'pc') -> Optional[MarketItem]:
         fuzzy_item = self._get_fuzzy_item(item)
 
         if fuzzy_item is None:
@@ -259,7 +262,8 @@ class MarketDatabase:
                                        fetch_orders=fetch_orders,
                                        fetch_part_orders=fetch_part_orders,
                                        fetch_price_history=fetch_price_history,
-                                       fetch_demand_history=fetch_demand_history)
+                                       fetch_demand_history=fetch_demand_history,
+                                       platform=platform)
 
     def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
         return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
@@ -357,8 +361,7 @@ class MarketItem:
 
     def __init__(self, database: MarketDatabase,
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
-                 aliases: List, fetch_orders: bool = True, fetch_parts: bool = True,
-                 fetch_part_orders: bool = True) -> None:
+                 aliases: List, platform: str = 'pc') -> None:
         self.database: MarketDatabase = database
         self.item_id: str = item_id
         self.item_name: str = item_name
@@ -376,13 +379,14 @@ class MarketItem:
         self.part_demand_history_fetched: bool = False
         self.price_history: Dict[str, str] = {}
         self.demand_history: Dict[str, str] = {}
+        self.platform = platform
 
     @classmethod
     async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
                      item_url_name: str, thumb: str, max_rank: str, aliases: List, fetch_orders: bool = True,
                      fetch_parts: bool = True, fetch_part_orders: bool = True,
-                     fetch_price_history: bool = True, fetch_demand_history: bool = True):
-        obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank, aliases)
+                     fetch_price_history: bool = True, fetch_demand_history: bool = True, platform: str = 'pc'):
+        obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank, aliases, platform)
 
         tasks = []
         if fetch_orders:
@@ -545,7 +549,7 @@ class MarketItem:
         self.database.users.update(users)
 
     async def get_orders(self) -> None:
-        orders = await fetch_wfm_data(f"{self.base_api_url}/items/{self.item_url_name}/orders")
+        orders = await fetch_wfm_data(f"{self.base_api_url}/items/{self.item_url_name}/orders", platform=self.platform)
         if orders is None:
             return
 
