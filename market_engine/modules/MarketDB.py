@@ -1,13 +1,23 @@
 import json
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, List, Any
 
 import pymysql
 from pytz import timezone
 
-from ..common import managed_transaction
 from .categories import build_parser, get_wfm_item_categorized
+
+@contextmanager
+def managed_transaction(connection):
+    try:
+        connection.begin()
+        yield
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
 
 
 def connect_to_database(user, password, host, database):
@@ -81,8 +91,8 @@ def get_last_saved_date(connection, date_to_fetch):
         return None
 
 
-def insert_item_statistics(connection, last_save_date):
-    file_list = get_file_list(last_save_date)
+def insert_item_statistics(connection, last_save_date, platform: str = 'pc'):
+    file_list = get_file_list(last_save_date, platform)
     data_list = get_data_list(file_list)
 
     # Get the union of all keys in the data_list
@@ -144,7 +154,7 @@ def get_date(connection):
     return most_recent_date
 
 
-def get_file_list(date, output_directory='output'):
+def get_file_list(date, output_directory='output', platform: str = 'pc'):
     file_list = []
     for file in os.listdir(output_directory):
         if file.endswith(".json"):
