@@ -11,13 +11,7 @@ RELICS_RUN_BASE_URL = "https://relics.run"
 RELICS_RUN_HISTORY_URL = f"{RELICS_RUN_BASE_URL}/history"
 
 
-async def fix_names_and_add_ids(data, translation_dict, item_ids):
-    for item_name in data:
-        for day in data[item_name]:
-            if item_name in translation_dict:
-                item_name = translation_dict[item_name]
 
-            day["item_id"] = get_item_id(item_name, item_ids)
 
 
 async def fetch_statistics_from_relics_run(item_ids, date_list, cache, session) -> None:

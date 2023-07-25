@@ -139,3 +139,17 @@ async def fetch_api_data(session: aiohttp.ClientSession,
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
+
+# ------------------------------
+# Misc Functions
+
+async def fix_names_and_add_ids(data, translation_dict, item_ids):
+    for item_name in data:
+        for day in data[item_name]:
+            if item_name in translation_dict:
+                item_name = translation_dict[item_name]
+
+            if 'order_type' not in day:
+                day['order_type'] = 'closed'
+
+            day["item_id"] = get_item_id(item_name, item_ids)
