@@ -1,14 +1,20 @@
 import re
+from typing import Dict
 
 import requests
 
+from market_engine.Common import fetch_api_data, cache_manager, session_manager
+
+# Additional categories that are exclusive to warframe.market
 ADDITIONAL_CATEGORIES = ['ArcaneHelmets', 'Imprints', 'VeiledRivenMods', 'Emotes',
                          'ArmorPieces', "CollectorItems"]
 
+# Overrides for items that have different names on warframe.market
 OVERRIDES = {
     'Prisma Dual Decurions': 'Prisma Dual Decurion'
 }
 
+# Manual categories for items that are not in the manifest
 MANUAL_CATEGORIES = {
     'Scan Aquatic Lifeforms': 'Mods',
     "Kavasa Prime Kubrow Collar Blueprint": "Misc",
@@ -33,11 +39,13 @@ MANUAL_CATEGORIES = {
     'Kavasa Prime Kubrow Collar Set': 'Misc'
 }
 
+# Armor types that are used to determine the category of an item
 ARMOR_TYPES = [
     'Chest Plate', 'Arm Spurs', 'Arm Plates', 'Leg Spurs', 'Arm Guards', 'Leg Guards',
     'Chest Marker', 'Knee Guards', 'Chest Piece', 'Spurs', 'Chest Guard', "Arm Insignia"
 ]
 
+# Category mappings for items that are not in the manifest
 CATEGORY_MAPPINGS = [
     (re.compile(r"Arcane.*Helmet"), 'ArcaneHelmets'),
     (re.compile(r".*Imprint"), 'Imprints'),
@@ -48,7 +56,15 @@ CATEGORY_MAPPINGS = [
     (re.compile(r"(.*) Set"), lambda match, d: d.get(match.group(1))),
 ]
 
-def find_category(item, flattened_type_dict):
+
+def find_category(item: str,
+                  flattened_type_dict: Dict[str, str]) -> str:
+    """
+    Finds the category of the given item using the flattened type dictionary
+    :param item: item to find the category of
+    :param flattened_type_dict: flattened type dictionary, as returned by gen_type_dict
+    :return: category of the item
+    """
     # Check if the item is in MANUAL_CATEGORIES
     if item in MANUAL_CATEGORIES:
         return MANUAL_CATEGORIES[item]
@@ -67,7 +83,26 @@ def find_category(item, flattened_type_dict):
     return category(match, flattened_type_dict) if callable(category) else category
 
 
-def process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_categorized, all_items, overrides, manual_categories):
+def process_item(item: str,
+                 item_type: str,
+                 wfm_item_data: Dict[str, str],
+                 wfm_item_data_lower: Dict[str, str],
+                 wfm_items_categorized: Dict[str, Dict[str, str]],
+                 all_items: set,
+                 overrides: Dict[str, str],
+                 manual_categories: Dict[str, str]) -> None:
+    """
+    Processes the given item, and adds it to the appropriate category
+    :param item: the item to process
+    :param item_type: the item type of the item
+    :param wfm_item_data: the warframe.market item data
+    :param wfm_item_data_lower: the warframe.market item data, with the keys converted to lowercase
+    :param wfm_items_categorized: the categorized warframe.market item data
+    :param all_items: set of all items
+    :param overrides: overrides for items that have different names on warframe.market
+    :param manual_categories: manual categories for items that are not in the manifest
+    :return: None
+    """
     if item in overrides:
         item = overrides[item]
 
@@ -83,7 +118,16 @@ def process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_
         all_items.add(item)
 
 
-def get_wfm_item_categorized(wfm_item_data, manifest_dict, wf_parser):
+def get_wfm_item_categorized(wfm_item_data: Dict[str, str],
+                             manifest_dict: Dict[str, str],
+                             wf_parser: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+    """
+    Categorizes the warframe.market item data
+    :param wfm_item_data: the warframe.market item data
+    :param manifest_dict: the manifest dictionary
+    :param wf_parser: the warframe parser dictionary
+    :return: the categorized warframe.market item data
+    """
     type_dict = gen_type_dict(manifest_dict, wf_parser)
     wfm_item_data_lower = {k.lower(): k for k, v in wfm_item_data.items()}
     all_items = set()
@@ -92,7 +136,8 @@ def get_wfm_item_categorized(wfm_item_data, manifest_dict, wf_parser):
 
     for item_type, items in type_dict.items():
         for item in items:
-            process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_categorized, all_items, OVERRIDES, MANUAL_CATEGORIES)
+            process_item(item, item_type, wfm_item_data, wfm_item_data_lower, wfm_items_categorized, all_items,
+                         OVERRIDES, MANUAL_CATEGORIES)
 
     flattened_type_dict = {item: item_type for item_type, items in type_dict.items() for item in items}
     uncategorized_items = set(wfm_item_data.keys()) - all_items
@@ -106,7 +151,12 @@ def get_wfm_item_categorized(wfm_item_data, manifest_dict, wf_parser):
     return wfm_items_categorized
 
 
-def parse_rarity(relic_name):
+def parse_rarity(relic_name: str):
+    """
+    Parses the rarity of the given relic name
+    :param relic_name: the relic name to parse
+    :return: the rarity of the relic
+    """
     rarities = {
         "Bronze": "Intact",
         "Silver": "Exceptional",
@@ -120,12 +170,24 @@ def parse_rarity(relic_name):
 
 
 def get_node_list():
-    nodes = requests.get('https://relics.run/json/solNodes.json').json()
+    """
+    Fetches the node list from relics.run
+    :return: the node list
+    """
+    with cache_manager() as cache, session_manager() as session:
+        return await fetch_api_data(cache=cache,
+                                    session=session,
+                                    url='https://relics.run/json/solNodes.json',
+                                    return_type='json')
 
-    return nodes
 
-
-def parse_name(name, parser):
+def parse_name(name: str, parser: Dict[str, str]) -> str:
+    """
+    Parses the name of the given item using the parser dictionary
+    :param name: the name of the manifest item to parse
+    :param parser: the parser dictionary
+    :return: the parsed name
+    """
     if name in parser:
         if isinstance(parser[name], dict):
             mission_node = parser[name]['node']
@@ -144,7 +206,13 @@ def parse_name(name, parser):
         return name
 
 
-def build_parser(manifest_dict):
+def build_parser(manifest_dict: Dict[str, str]) -> Dict[str, str]:
+    """
+    Builds the parser dictionary from the manifest dictionary
+    :param manifest_dict: the manifest dictionary
+    :return: the parser dictionary, converting internal names to user-friendly names
+    """
+    # Base parser dictionary
     parser_base = {'AP_POWER': 'Zenurik',
                    'AP_TACTIC': 'Naramon',
                    'AP_DEFENSE': 'Vazarin',
@@ -184,7 +252,6 @@ def build_parser(manifest_dict):
                    '/Lotus/Powersuits/Yareli/BoardSuit': 'Merulina',
                    '/Lotus/Types/Friendly/Pets/MoaPets/MoaPetPowerSuit': 'Moa',
                    '/Lotus/Types/Game/CrewShip/RailJack/DefaultHarness': 'Railjack Harness',
-                   '/Lotus/Types/Gameplay/InfestedMicroplanet/EncounterObjects/TestPartItem': 'TestPartItem',
                    '/Lotus/Upgrades/CosmeticEnhancers/Offensive/SecondaryDamageOnMeleeKill': 'Secondary Dexterity',
                    '/Lotus/Upgrades/CosmeticEnhancers/Zariman/PrimaryOnAbilityReloadSpeed': 'Fractalized Reset',
                    '/Lotus/Upgrades/CosmeticEnhancers/Zariman/SecondaryOnOvershieldCritChance': 'Cascadia Overcharge',
@@ -407,7 +474,13 @@ def build_parser(manifest_dict):
     return parser
 
 
-def gen_type_dict(manifest_dict: dict, parser: dict):
+def gen_type_dict(manifest_dict: dict, parser: dict) -> dict:
+    """
+    Generates the type dictionary from the manifest dictionary
+    :param manifest_dict: the public manifest dictionary from warframe.com
+    :param parser: the parser dictionary
+    :return: the type dictionary
+    """
     type_dict = {'Relics': set(),
                  'Arcanes': set(),
                  'Mods': set(),
@@ -499,7 +572,6 @@ def gen_type_dict(manifest_dict: dict, parser: dict):
                  '/Lotus/Types/Items/ShipDecos/InstrumentDecoItem': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/BaseFishTrophy': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/LotusShawzinPlayableBase': 'Decorations',
-                 '/Lotus/Types/Items/ShipDecos/BaseFishTrophy': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/Vignettes/Enemies/ShipDecoItem': 'Decorations',
                  '/Lotus/Types/Items/ShipDecos/Plushies/PlushyThumper': 'Decorations',
                  '/Lotus/Types/Items/Research/SampleBase': 'Misc',
@@ -514,7 +586,6 @@ def gen_type_dict(manifest_dict: dict, parser: dict):
                  '/Lotus/Types/Items/Fish/Solaris/UncommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/SolarisCoolCommonFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/OrokinCoolRareFishAItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/Solaris/RareFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/OrokinBothRareFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/SolarisBothCommonFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Solaris/OrokinBothLegendaryFishAItem': 'Fish',
@@ -530,15 +601,12 @@ def gen_type_dict(manifest_dict: dict, parser: dict):
                  '/Lotus/Types/Items/Fish/Eidolon/NightRareFishBItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/RareFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/NightRareFishAItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/Eidolon/RareFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/NightLegendaryFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/LegendaryFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/DayUncommonFishBItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/UncommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/DayUncommonFishAItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/Eidolon/UncommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/DayCommonFishCItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/Eidolon/CommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/DayCommonFishBItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/CommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/DayCommonFishAItem': 'Fish',
@@ -548,7 +616,6 @@ def gen_type_dict(manifest_dict: dict, parser: dict):
                  '/Lotus/Types/Items/Fish/Eidolon/BothCommonFishBItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Eidolon/BothCommonFishAItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Deimos/OrokinUncommonAFishItem': 'Fish',
-                 '/Lotus/Types/Items/Fish/Deimos/UncommonFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Deimos/OrokinRareAFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Deimos/OrokinLegendaryAFishItem': 'Fish',
                  '/Lotus/Types/Items/Fish/Deimos/LegendaryFishItem': 'Fish',

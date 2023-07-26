@@ -1,11 +1,33 @@
+import asyncio
+from typing import List, Dict, Union, Tuple, Coroutine, Any, Optional
+
+from .MarketDatabase import MarketDatabase
+from ..Common import fetch_api_data, get_wfm_headers, cache_manager, session_manager
+
+
 class MarketItem:
-    base_api_url: str = "https://api.warframe.market/v1"
-    base_url: str = "warframe.market/items"
-    asset_url: str = "https://warframe.market/static/assets"
+    """
+    Base class for market items
+    """
+    base_api_url: str = "https://api.warframe.market/v1"  # Base URL for warframe.market API
+    base_url: str = "warframe.market/items"  # Base URL for warframe.market items
+    asset_url: str = "https://warframe.market/static/assets"  # Base URL for warframe.market assets
 
     def __init__(self, database: MarketDatabase,
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
                  aliases: List, platform: str = 'pc') -> None:
+        """
+        Initializes a MarketItem object.
+        :param database: database object
+        :param item_id: the warframe.market item id
+        :param item_name: the english item name
+        :param item_type: the type of the item (e.g. 'Mods', 'Relics', etc.)
+        :param item_url_name: the url name of the item, as used in the warframe.market url
+        :param thumb: the url of the item's thumbnail
+        :param max_rank: the maximum rank of the item (for mods)
+        :param aliases: a list of aliases for the item
+        :param platform: the platform to fetch the item for
+        """
         self.database: MarketDatabase = database
         self.item_id: str = item_id
         self.item_name: str = item_name
@@ -30,7 +52,26 @@ class MarketItem:
     async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
                      item_url_name: str, thumb: str, max_rank: str, aliases: List, fetch_orders: bool = True,
                      fetch_parts: bool = True, fetch_part_orders: bool = True,
-                     fetch_price_history: bool = True, fetch_demand_history: bool = True, platform: str = 'pc'):
+                     fetch_price_history: bool = True, fetch_demand_history: bool = True,
+                     platform: str = 'pc') -> "MarketItem":
+        """
+        Creates a MarketItem object and fetches the relevant data.
+        :param database: database object
+        :param item_id: the warframe.market item id
+        :param item_name: the english item name
+        :param item_type: the type of the item (e.g. 'Mods', 'Relics', etc.)
+        :param item_url_name: the url name of the item, as used in the warframe.market url
+        :param thumb: the url of the item's thumbnail
+        :param max_rank: the maximum rank of the item (for mods)
+        :param aliases: a list of aliases for the item
+        :param fetch_orders: whether to fetch the item's orders
+        :param fetch_parts: whether to fetch the item's parts
+        :param fetch_part_orders: whether to fetch the orders for the item's parts
+        :param fetch_price_history: whether to fetch the item's price history
+        :param fetch_demand_history: whether to fetch the item's demand history
+        :param platform: the platform to fetch the item for
+        :return: a MarketItem object
+        """
         obj = cls(database, item_id, item_name, item_type, item_url_name, thumb, max_rank, aliases, platform)
 
         tasks = []
@@ -65,6 +106,11 @@ class MarketItem:
 
     @staticmethod
     def create_filters(**kwargs) -> Tuple[Dict[str, Union[int, str, List[int], List[str]]], Dict[str, str]]:
+        """
+        Creates a filters dictionary and a mode dictionary from the provided keyword arguments.
+        :param kwargs: The keyword arguments to create the filters and mode dictionaries from.
+        :return: A tuple containing the filters dictionary and the mode dictionary, used for filtering orders.
+        """
         filters = {}
         mode = {}
 
@@ -78,6 +124,11 @@ class MarketItem:
         return filters, mode
 
     def get_subtypes(self, order_type: str = 'sell') -> List[str]:
+        """
+        Returns a list of the item's subtypes from the item's current orders.
+        :param order_type: The type of orders to get the subtypes from ('sell' or 'buy')
+        :return: A list of the item's subtypes
+        """
         subtypes = []
         for order in self.orders[order_type]:
             if 'subtype' in order and order['subtype'] not in subtypes and order['state'] == 'ingame':
@@ -86,21 +137,43 @@ class MarketItem:
         return subtypes
 
     def get_part_orders_tasks(self) -> list[Coroutine[Any, Any, None]]:
+        """
+        Returns a list of tasks for fetching the orders of the item's parts.
+        :return: A list of tasks for fetching the orders of the item's parts.
+        """
         tasks = [part.get_orders() for part in self.parts if part is not None]
         self.part_orders_fetched = True
 
         return tasks
 
     def get_price_history(self) -> None:
+        """
+        Fetches the item's price history from the database.
+        :return: None
+        """
         self.price_history = self.database.get_item_price_history(self.item_id)
 
     def get_demand_history(self) -> None:
+        """
+        Fetches the item's demand history from the database.
+        :return: None
+        """
         self.demand_history = self.database.get_item_demand_history(self.item_id)
 
     def add_alias(self, alias: str) -> None:
+        """
+        Adds an alias to the item.
+        :param alias: The alias to add.
+        :return: None
+        """
         self.database.add_item_alias(self.item_id, alias)
 
     def remove_alias(self, alias: str) -> None:
+        """
+        Removes an alias from the item.
+        :param alias: The alias to remove.
+        :return: None
+        """
         self.database.remove_item_alias(self.item_id, alias)
 
     def filter_orders(self,
@@ -161,6 +234,11 @@ class MarketItem:
         return filtered_orders[:num_orders]
 
     async def parse_orders(self, orders: List[Dict[str, Any]]) -> None:
+        """
+        Parses the orders fetched from the warframe.market API.
+        :param orders: The orders fetched from the warframe.market API.
+        :return: None
+        """
         self.orders: Dict[str, List[Dict[str, Union[str, int]]]] = {'buy': [], 'sell': []}
         users = {}
 
@@ -194,11 +272,23 @@ class MarketItem:
         self.database.users.update(users)
 
     async def get_orders(self) -> None:
-        orders = await fetch_wfm_data(f"{self.base_api_url}/items/{self.item_url_name}/orders", platform=self.platform)
-        if orders is None:
-            return
+        """
+        Fetches the item's orders from the warframe.market API.
+        :return: None
+        """
+        async with cache_manager() as cache, session_manager() as session:
+            orders = await fetch_api_data(cache=cache,
+                                          session=session,
+                                          url=f"{self.base_api_url}/items/{self.item_url_name}/orders",
+                                          headers=get_wfm_headers(platform=self.platform))
+            if orders is None:
+                return
 
-        await self.parse_orders(orders['payload']['orders'])
+            await self.parse_orders(orders['payload']['orders'])
 
     def get_parts(self) -> None:
+        """
+        Fetches the item's parts from the database.
+        :return: None
+        """
         self.parts = [MarketItem(self.database, *item) for item in self.database.get_item_parts(self.item_id)]
