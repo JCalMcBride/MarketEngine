@@ -1,8 +1,6 @@
 import re
 from typing import Dict
 
-import requests
-
 from market_engine.Common import fetch_api_data, cache_manager, session_manager
 
 # Additional categories that are exclusive to warframe.market
@@ -169,19 +167,19 @@ def parse_rarity(relic_name: str):
     return ""
 
 
-def get_node_list():
+async def get_node_list():
     """
     Fetches the node list from relics.run
     :return: the node list
     """
-    with cache_manager() as cache, session_manager() as session:
+    async with cache_manager() as cache, session_manager() as session:
         return await fetch_api_data(cache=cache,
                                     session=session,
                                     url='https://relics.run/json/solNodes.json',
                                     return_type='json')
 
 
-def parse_name(name: str, parser: Dict[str, str]) -> str:
+def parse_name(name: str, parser: Dict) -> str:
     """
     Parses the name of the given item using the parser dictionary
     :param name: the name of the manifest item to parse
@@ -206,7 +204,7 @@ def parse_name(name: str, parser: Dict[str, str]) -> str:
         return name
 
 
-def build_parser(manifest_dict: Dict[str, str]) -> Dict[str, str]:
+async def build_parser(manifest_dict: Dict) -> Dict[str, str]:
     """
     Builds the parser dictionary from the manifest dictionary
     :param manifest_dict: the manifest dictionary
@@ -441,7 +439,7 @@ def build_parser(manifest_dict: Dict[str, str]) -> Dict[str, str]:
                 elif 'abilityUniqueName' in data:
                     parser[data['abilityUniqueName']] = data['abilityName']
 
-    nodes = get_node_list()
+    nodes = await get_node_list()
 
     missions = []
     planets = []

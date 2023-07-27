@@ -8,7 +8,7 @@ from typing import Any, Dict
 import aiohttp
 import redis
 from aiolimiter import AsyncLimiter
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, stop_after_attempt, wait_fixed, wait_exponential
 
 # ------------------------------
 # Config
@@ -94,9 +94,6 @@ def set_cached_data(cache: redis.Redis | None, cache_key: str, data: Any, expira
 # ------------------------------
 # API Request Functions
 
-wfm_rate_limiter = AsyncLimiter(3, 1)  # Rate limiter for warframe.market API requests, 3 requests per second
-
-
 @asynccontextmanager
 async def session_manager():
     """
@@ -148,15 +145,16 @@ async def fetch_api_data(session: aiohttp.ClientSession,
         aiohttp.ClientResponseError: If the request to the URL results in an HTTP error.
     """
     # Check if the data is in the cache, if one is provided
-    data = get_cached_data(cache, url)
+    if headers is None:
+        headers = {}
+
+    data = get_cached_data(cache=cache,
+                           url=f"{url}#{headers}")
     if data is None:
         if rate_limiter is not None:
             await rate_limiter.acquire()
 
-        if headers is None:
-            headers = {}
-
-        @retry(stop=stop_after_attempt(5), wait=wait_fixed(1))
+        @retry(stop=stop_after_attempt(5), wait=wait_exponential(max=60))
         async def make_request():
             async with session.get(url, headers=headers) as res:
                 res.raise_for_status()
@@ -172,7 +170,17 @@ async def fetch_api_data(session: aiohttp.ClientSession,
         data = await make_request()
 
         # Store the data in the cache, if one is provided
-        set_cached_data(cache, f"{url}#{headers}", str(data), expiration)
+        if return_type == 'json':
+            cached_data = json.dumps(data)
+        elif return_type == 'text':
+            cached_data = str(data)
+        elif return_type == 'bytes':
+            cached_data = data
+
+        set_cached_data(cache, f"{url}#{headers}", cached_data, expiration)
+    else:
+        if return_type == 'json':
+            data = json.loads(data)
 
     return data
 

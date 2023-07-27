@@ -8,12 +8,14 @@ from typing import Dict, Any, List, Tuple
 
 import aiohttp
 import redis
+from aiolimiter import AsyncLimiter
 
 from market_engine.Common import logger, fetch_api_data, config, get_wfm_headers, get_statistic_path
 
 API_BASE_URL = "https://api.warframe.market/v1"  # Base URL for warframe.market API
 ITEMS_ENDPOINT = "/items"  # Endpoint for fetching items
 STATISTICS_ENDPOINT = "/items/{}/statistics"  # Endpoint for fetching item statistics
+wfm_rate_limiter = AsyncLimiter(3, 1)  # Rate limiter for warframe.market API requests, 3 requests per second
 
 
 async def fetch_items_from_warframe_market(cache: redis.Redis,
@@ -69,16 +71,22 @@ def parse_item_info(item_info: Dict[str, Any]) -> Dict[str, Any]:
 
 async def fetch_statistics_from_warframe_market(cache: redis.Redis | None,
                                                 session: aiohttp.ClientSession,
-                                                platform: str = 'pc') -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                                                platform: str = 'pc', items: Dict = None, item_ids: Dict = None) -> \
+        Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Fetches statistics from warframe.market
     :param cache: redis cache
     :param session: aiohttp session
     :param platform: platform to fetch statistics for
+    :param items: list of warframe.market items, as returned by fetch_items_from_warframe_market; if None, will fetch
+    :param item_ids: dictionary of item names to item ids, as returned by build_item_ids; if None, will build
     :return: tuple of statistic history dictionary and item info dictionary
     """
-    items = await fetch_items_from_warframe_market(cache=cache, session=session)
-    item_ids = build_item_ids(items)
+    if items is None:
+        items = await fetch_items_from_warframe_market(cache=cache, session=session)
+
+    if item_ids is None:
+        item_ids = build_item_ids(items)
 
     statistic_history_dict = defaultdict(lambda: defaultdict(list))
     item_info = {}
@@ -95,7 +103,8 @@ async def fetch_statistics_from_warframe_market(cache: redis.Redis | None,
         api_data = (await fetch_api_data(cache=cache,
                                          session=session,
                                          url=f"{API_BASE_URL}{STATISTICS_ENDPOINT.format(item['url_name'])}?include=item",
-                                         headers=get_wfm_headers(platform)))
+                                         headers=get_wfm_headers(platform),
+                                         rate_limiter=wfm_rate_limiter))
 
         item_name = item["item_name"]
 
@@ -115,7 +124,7 @@ async def fetch_statistics_from_warframe_market(cache: redis.Redis | None,
 
                     statistic_history_dict[date][item_name].append(statistic_record)
 
-    await asyncio.gather(*[fetch_and_process_item_statistics(item) for item in items[:10]])
+    await asyncio.gather(*[fetch_and_process_item_statistics(item) for item in items])
 
     return statistic_history_dict, item_info
 

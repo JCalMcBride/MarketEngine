@@ -276,11 +276,11 @@ class MarketDatabase:
                                                       host=host,
                                                       database=database)
 
-        self.all_items = self._get_all_items()
+        self.all_items = self.get_all_items()
         self.users: Dict[str, str] = {}
 
-    def _execute_query(self, query: str, *params, fetch: str = 'all',
-                       commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
+    def execute_query(self, query: str, *params, fetch: str = 'all',
+                      commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
         """
         Executes a query on the database, and returns the result if applicable
         :param query: the query to execute
@@ -306,12 +306,12 @@ class MarketDatabase:
             elif fetch == 'all':
                 return cur.fetchall()
 
-    def _get_all_items(self) -> List[dict]:
+    def get_all_items(self) -> List[dict]:
         """
         Gets all items from the database
         :return: a list of all items
         """
-        all_data = self._execute_query(self._GET_ALL_ITEMS_QUERY)
+        all_data = self.execute_query(self._GET_ALL_ITEMS_QUERY)
 
         all_items: List[dict] = []
         for item_id, item_name, item_type, url_name, thumb, max_rank, alias in all_data:
@@ -324,7 +324,7 @@ class MarketDatabase:
 
         return all_items
 
-    def _save_items(self, items, item_ids, item_info) -> None:
+    def save_items(self, items, item_ids, item_info) -> None:
         """
         Saves items to the database
         :param items: dictionary of items to save
@@ -336,8 +336,9 @@ class MarketDatabase:
             return
 
         data_list = [
-            (item['id'], item['item_name'], item['url_name'], item['thumb'], item_info[item['id']]['mod_max_rank'])
-            for item in items]
+            (item['id'], item['item_name'], item['url_name'], item['thumb'],
+             item_info[item['id']]['mod_max_rank'])
+            for item in items if item['id'] in item_info]
 
         new_item_ids = {}
         for item, item_id in item_ids.items():
@@ -345,9 +346,10 @@ class MarketDatabase:
                 new_item_ids[item] = item_id
         data_list.extend([(new_item_ids[item], item, None, None, None) for item in new_item_ids])
 
-        self._execute_query(self._INSERT_ITEM_QUERY, data_list, many=True, commit=True)
+        if len(data_list) > 0:
+            self.execute_query(self._INSERT_ITEM_QUERY, data_list, many=True, commit=True)
 
-    def _save_item_tags(self, item_info: Dict[str, Any]) -> None:
+    def save_item_tags(self, item_info: Dict[str, Any]) -> None:
         """
         Saves item tags to the database
         :param item_info: dictionary of item info
@@ -358,9 +360,10 @@ class MarketDatabase:
             for tag in item_info[item]['tags']:
                 data_list.append((item, tag))
 
-        self._execute_query(self._INSERT_ITEM_TAGS_QUERY, data_list, many=True, commit=True)
+        if len(data_list) > 0:
+            self.execute_query(self._INSERT_ITEM_TAGS_QUERY, data_list, many=True, commit=True)
 
-    def _save_item_subtypes(self, item_info: Dict[str, Any]) -> None:
+    def save_item_subtypes(self, item_info: Dict[str, Any]) -> None:
         """
         Saves item subtypes to the database
         :param item_info: dictionary of item info
@@ -371,9 +374,10 @@ class MarketDatabase:
             for subtype in item_info[item]['subtypes']:
                 data_list.append((item, subtype))
 
-        self._execute_query(self._INSERT_ITEM_SUBTYPE_QUERY, data_list, many=True, commit=True)
+        if len(data_list) > 0:
+            self.execute_query(self._INSERT_ITEM_SUBTYPE_QUERY, data_list, many=True, commit=True)
 
-    def _save_items_in_set(self, item_info: Dict[str, Any]) -> None:
+    def save_items_in_set(self, item_info: Dict[str, Any]) -> None:
         """
         Saves items in a set to the database
         :param item_info: dictionary of item info
@@ -384,14 +388,15 @@ class MarketDatabase:
             for item_in_set in item_info[item]['set_items']:
                 data_list.append((item, item_in_set))
 
-        self._execute_query(self._INSERT_ITEMS_IN_SET_QUERY, data_list, many=True, commit=True)
+        if len(data_list) > 0:
+            self.execute_query(self._INSERT_ITEMS_IN_SET_QUERY, data_list, many=True, commit=True)
 
     def get_sub_type_data(self) -> Dict[str, List[str]]:
         """
         Gets sub type data from the database
         :return: dictionary of item names to sub types
         """
-        sub_type_data = self._execute_query(self._GET_SUBTYPE_DATA_QUERY)
+        sub_type_data = self.execute_query(self._GET_SUBTYPE_DATA_QUERY)
 
         return {row[0]: row[1].split(',') for row in sub_type_data}
 
@@ -400,14 +405,14 @@ class MarketDatabase:
         Gets item data from the database
         :return: dictionary of item names to item ids
         """
-        return dict(self._execute_query(self._GET_ITEM_DICT_QUERY))
+        return dict(self.execute_query(self._GET_ITEM_DICT_QUERY))
 
     def get_all_sets(self) -> Dict[str, str]:
         """
         Gets all sets from the database
         :return: dictionary of set ids to set names
         """
-        return dict(self._execute_query(self._GET_ALL_SETS_QUERY))
+        return dict(self.execute_query(self._GET_ALL_SETS_QUERY))
 
     def save_item_categories(self, item_categories: Dict[str, Dict[str, str]]) -> None:
         """
@@ -416,9 +421,9 @@ class MarketDatabase:
         :return: None
         """
         for item_type in item_categories:
-            self._execute_query(self._SET_ITEM_CATEGORIES_QUERY,
-                                *[(item_type, item_id) for item_id in item_categories[item_type].values()],
-                                many=True, commit=True)
+            self.execute_query(self._SET_ITEM_CATEGORIES_QUERY,
+                               [(item_type, item_id) for item_id in item_categories[item_type].values()],
+                               many=True, commit=True)
 
     def insert_item_statistics(self, last_save_date: datetime = None,
                                platform: str = 'pc') -> None:
@@ -430,6 +435,9 @@ class MarketDatabase:
         """
         file_list = get_file_list(last_save_date, platform)
         data_list = get_data_list(file_list)
+
+        if len(data_list) == 0:
+            return
 
         # Get the union of all keys in the data_list
         all_columns = set().union(*(data.keys() for data in data_list))
@@ -462,7 +470,7 @@ class MarketDatabase:
         Gets the most recent date in the database
         :return: the most recent date in the database if applicable, otherwise None
         """
-        most_recent_datetime: datetime = self._execute_query(self._GET_MOST_RECENT_DATE_QUERY, fetch='one')[0]
+        most_recent_datetime: datetime = self.execute_query(self._GET_MOST_RECENT_DATE_QUERY, fetch='one')[0]
 
         most_recent_date = None
         if most_recent_datetime is not None:
@@ -484,7 +492,7 @@ class MarketDatabase:
         :param fetch_reviews: whether or not to fetch reviews from the API
         :return: the user if applicable, otherwise None
         """
-        result = self._execute_query(self._GET_CORRECT_CASE_QUERY, user, fetch='one')
+        result = self.execute_query(self._GET_CORRECT_CASE_QUERY, user, fetch='one')
 
         if result is None:
             # Username not found, attempt to fetch from API
@@ -523,10 +531,10 @@ class MarketDatabase:
         """
         fuzzy_item = self._get_fuzzy_item(item)  # Get the best match for the item name
 
-        if fuzzy_item is None: # No match found
+        if fuzzy_item is None:  # No match found
             return None
 
-        item_data: List[str] = list(fuzzy_item.values()) # Get the item data from the dictionary
+        item_data: List[str] = list(fuzzy_item.values())  # Get the item data from the dictionary
 
         # Creates the item object, fetching data from the API if applicable
         return await MarketItem.create(self, *item_data,
@@ -543,7 +551,7 @@ class MarketDatabase:
         :param item_id: the item to get statistics for
         :return: the item statistics
         """
-        return self._execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
+        return self.execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
 
     def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
         """
@@ -552,7 +560,7 @@ class MarketDatabase:
         :param days: the number of days to get volume for
         :return: the item volume
         """
-        return self._execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, fetch='all')
+        return self.execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, fetch='all')
 
     def get_item_price_history(self, item_id: str) -> Dict[str, str]:
         """
@@ -560,7 +568,7 @@ class MarketDatabase:
         :param item_id: the item to get price history for
         :return: the item price history
         """
-        return dict(self._execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, fetch='all'))
+        return dict(self.execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, fetch='all'))
 
     def get_item_demand_history(self, item_id: str) -> Dict[str, str]:
         """
@@ -568,7 +576,7 @@ class MarketDatabase:
         :param item_id: the item to get demand history for
         :return: the item demand history
         """
-        return dict(self._execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, fetch='all'))
+        return dict(self.execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, fetch='all'))
 
     def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
         """
@@ -586,14 +594,14 @@ class MarketDatabase:
         :param item_id: the item to get parts for
         :return: the item parts
         """
-        return self._execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id, fetch='all')
+        return self.execute_query(self._GET_ITEMS_IN_SET_QUERY, item_id, fetch='all')
 
     def get_word_aliases(self) -> Dict[str, str]:
         """
         Gets word aliases from the database
         :return: the word aliases
         """
-        return dict(self._execute_query(self._GET_ALL_WORD_ALIASES_QUERY, fetch='all'))
+        return dict(self.execute_query(self._GET_ALL_WORD_ALIASES_QUERY, fetch='all'))
 
     async def add_item_alias(self, item_id: str, alias: str) -> None:
         """
@@ -602,12 +610,12 @@ class MarketDatabase:
         :param alias: the alias to add
         :return: None
         """
-        self._execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
-        self.all_items = self._get_all_items()  # Update the list of all items
+        self.execute_query(self._ADD_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
+        self.all_items = self.get_all_items()  # Update the list of all items
 
     def remove_item_alias(self, item_id: str, alias: str) -> None:
-        self._execute_query(self._REMOVE_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
-        self.all_items = self._get_all_items()  # Update the list of all items
+        self.execute_query(self._REMOVE_ITEM_ALIAS_QUERY, item_id, alias, commit=True)
+        self.all_items = self.get_all_items()  # Update the list of all items
 
     async def add_word_alias(self, word: str, alias: str) -> None:
         """
@@ -616,7 +624,7 @@ class MarketDatabase:
         :param alias: the alias to add
         :return: None
         """
-        self._execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias, commit=True)
+        self.execute_query(self._ADD_WORD_ALIAS_QUERY, word, alias, commit=True)
 
     def update_usernames(self) -> None:
         """
@@ -624,7 +632,7 @@ class MarketDatabase:
         :return: None
         """
         # Fetch all user data first
-        user_data = dict(self._execute_query(self._GET_ALL_USERS_QUERY, fetch='all'))
+        user_data = dict(self.execute_query(self._GET_ALL_USERS_QUERY, fetch='all'))
 
         # Prepare batch queries
         update_queries = []
@@ -646,7 +654,7 @@ class MarketDatabase:
 
         # Execute the queries
         if update_queries:
-            self._execute_query(self._UPSERT_USER_QUERY, update_queries, commit=True, many=True)
+            self.execute_query(self._UPSERT_USER_QUERY, update_queries, commit=True, many=True)
 
         if history_queries:
-            self._execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)
+            self.execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)

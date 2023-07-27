@@ -1,7 +1,6 @@
 import asyncio
 from typing import List, Dict, Union, Tuple, Coroutine, Any, Optional
 
-from .MarketDatabase import MarketDatabase
 from ..Common import fetch_api_data, get_wfm_headers, cache_manager, session_manager
 
 
@@ -13,7 +12,7 @@ class MarketItem:
     base_url: str = "warframe.market/items"  # Base URL for warframe.market items
     asset_url: str = "https://warframe.market/static/assets"  # Base URL for warframe.market assets
 
-    def __init__(self, database: MarketDatabase,
+    def __init__(self, database: "MarketDatabase",
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
                  aliases: List, platform: str = 'pc') -> None:
         """
@@ -28,7 +27,7 @@ class MarketItem:
         :param aliases: a list of aliases for the item
         :param platform: the platform to fetch the item for
         """
-        self.database: MarketDatabase = database
+        self.database: "MarketDatabase" = database
         self.item_id: str = item_id
         self.item_name: str = item_name
         self.item_type: str = item_type
@@ -49,7 +48,7 @@ class MarketItem:
         self.platform = platform
 
     @classmethod
-    async def create(cls, database: MarketDatabase, item_id: str, item_name: str, item_type: str,
+    async def create(cls, database: "MarketDatabase", item_id: str, item_name: str, item_type: str,
                      item_url_name: str, thumb: str, max_rank: str, aliases: List, fetch_orders: bool = True,
                      fetch_parts: bool = True, fetch_part_orders: bool = True,
                      fetch_price_history: bool = True, fetch_demand_history: bool = True,

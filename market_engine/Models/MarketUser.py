@@ -1,7 +1,6 @@
 import asyncio
 from typing import Dict, List, Union, Any
 
-from .MarketDatabase import MarketDatabase
 from ..Common import fetch_api_data, cache_manager, session_manager
 
 
@@ -13,7 +12,7 @@ class MarketUser:
     base_url: str = "https://warframe.market/profile"  # Base URL for warframe.market profiles
     asset_url: str = "https://warframe.market/static/assets"  # Base URL for warframe.market assets
 
-    def __init__(self, database: MarketDatabase, user_id: str, username: str):
+    def __init__(self, database: "MarketDatabase", user_id: str, username: str):
         """
         Initializes a MarketUser object.
         :param database: database object
@@ -39,7 +38,7 @@ class MarketUser:
         self.reviews: List[str] = []
 
     @classmethod
-    async def create(cls, database: MarketDatabase, user_id: str, username: str,
+    async def create(cls, database: "MarketDatabase", user_id: str, username: str,
                      fetch_user_data: bool = True, fetch_orders: bool = True, fetch_reviews: bool = True):
         """
         Creates a MarketUser object.
