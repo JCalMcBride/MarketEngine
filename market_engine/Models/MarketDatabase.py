@@ -59,12 +59,13 @@ def remove_common_words(name: str, common_words: set) -> str:
 
 def remove_blueprint(s: str) -> str:
     """
-    Removes the word 'blueprint' from the end of a string except for prime, wraith, and vandal blueprints
+    Removes the word 'blueprint' from the end of a string when it is preceded by a warframe/archwing part name.
     :param s: string to remove 'blueprint' from
     :return: string with 'blueprint' removed
     """
     words = s.lower().split()
-    if words[-1:] == ['blueprint'] and words[-2] not in ['prime', 'wraith', 'vandal']:
+    part_word_list = ['chassis', 'neuroptics', 'systems', 'wings', 'harness']
+    if words[-1:] == ['blueprint'] and words[-2] in part_word_list:
         return ' '.join(words[:-1])
     return s.lower()
 
