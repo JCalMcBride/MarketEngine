@@ -126,6 +126,9 @@ def get_wfm_item_categorized(wfm_item_data: Dict[str, str],
     :param wf_parser: the warframe parser dictionary
     :return: the categorized warframe.market item data
     """
+    if any(x is None or len(x) == 0 for x in [wfm_item_data, manifest_dict, wf_parser]):
+        return {}
+
     type_dict = gen_type_dict(manifest_dict, wf_parser)
     wfm_item_data_lower = {k.lower(): k for k, v in wfm_item_data.items()}
     all_items = set()
@@ -141,8 +144,11 @@ def get_wfm_item_categorized(wfm_item_data: Dict[str, str],
     uncategorized_items = set(wfm_item_data.keys()) - all_items
 
     for item in uncategorized_items:
-        category = find_category(item, flattened_type_dict)
-        wfm_items_categorized[category][item] = wfm_item_data[item]
+        try:
+            category = find_category(item, flattened_type_dict)
+            wfm_items_categorized[category][item] = wfm_item_data[item]
+        except KeyError:
+            continue
 
     wfm_items_categorized = {item_type: items for item_type, items in sorted(wfm_items_categorized.items()) if items}
 
@@ -210,6 +216,9 @@ async def build_parser(manifest_dict: Dict) -> Dict[str, str]:
     :param manifest_dict: the manifest dictionary
     :return: the parser dictionary, converting internal names to user-friendly names
     """
+    if manifest_dict is None:
+        return {}
+
     # Base parser dictionary
     parser_base = {'AP_POWER': 'Zenurik',
                    'AP_TACTIC': 'Naramon',
@@ -479,6 +488,9 @@ def gen_type_dict(manifest_dict: dict, parser: dict) -> dict:
     :param parser: the parser dictionary
     :return: the type dictionary
     """
+    if any(x is None or len(x) == 0 for x in [manifest_dict, parser]):
+        return {}
+
     type_dict = {'Relics': set(),
                  'Arcanes': set(),
                  'Mods': set(),

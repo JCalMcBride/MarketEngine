@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import aiohttp
 import redis
@@ -58,7 +58,7 @@ def get_item_id(item_name: str, item_ids: Dict[str, str]) -> str:
     return hashlib.md5(item_name.encode()).hexdigest()
 
 
-def get_cached_data(cache: redis.Redis | None, url: str) -> Any | None:
+def get_cached_data(cache: redis.Redis, url: str) -> Any:
     """
     Gets the cached data for the given URL.
     :param cache: The Redis cache, or None if no cache is available.
@@ -76,7 +76,7 @@ def get_cached_data(cache: redis.Redis | None, url: str) -> Any | None:
     return None
 
 
-def set_cached_data(cache: redis.Redis | None, cache_key: str, data: Any, expiration: int = 24 * 60 * 60) -> None:
+def set_cached_data(cache: redis.Redis, cache_key: str, data: Any, expiration: int = 24 * 60 * 60) -> None:
     """
     Sets the cached data for the given URL.
     :param cache: The Redis cache, or None if no cache is available.
@@ -117,7 +117,7 @@ def get_wfm_headers(platform: str = 'pc', language: str = 'en'):
 async def fetch_api_data(session: aiohttp.ClientSession,
                          url: str,
                          headers: dict[str, str] = None,
-                         cache: redis.Redis | None = None,
+                         cache: redis.Redis = None,
                          expiration: int = 24 * 60 * 60,
                          rate_limiter: AsyncLimiter = None,
                          return_type: str = 'json') -> Any:
@@ -151,11 +151,11 @@ async def fetch_api_data(session: aiohttp.ClientSession,
     data = get_cached_data(cache=cache,
                            url=f"{url}#{headers}")
     if data is None:
-        if rate_limiter is not None:
-            await rate_limiter.acquire()
-
         @retry(stop=stop_after_attempt(5), wait=wait_exponential(max=60))
         async def make_request():
+            if rate_limiter is not None:
+                await rate_limiter.acquire()
+
             async with session.get(url, headers=headers) as res:
                 res.raise_for_status()
                 logger.debug(f"Fetched data for {url}")

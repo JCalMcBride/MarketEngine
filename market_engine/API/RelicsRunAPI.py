@@ -14,6 +14,22 @@ from market_engine.Common import fetch_api_data, logger, config, fix_names_and_a
 RELICS_RUN_BASE_URL = "https://relics.run"  # Base URL for relics.run
 RELICS_RUN_HISTORY_URL = f"{RELICS_RUN_BASE_URL}/history"  # URL for fetching statistic history
 
+def save_statistic_history(statistic_history_dict: Dict[str, Any], date: str, platform: str = 'pc') -> None:
+    """
+    Saves the statistic history to the output directory as specified in the config.
+    :param statistic_history_dict: dictionary of item names to statistic history
+    :param platform: platform to save statistic history for
+    :return: None
+    """
+    output_dir = get_statistic_path(platform)
+
+    os.makedirs(output_dir, exist_ok=True)  # Create directory if it does not exist
+
+    filename = os.path.join(output_dir, date)
+
+    with open(filename, 'w') as f:
+        json.dump(statistic_history_dict, f)
+
 
 async def fetch_statistics_from_relics_run(cache: redis.Redis,
                                            session: aiohttp.ClientSession,
@@ -41,8 +57,7 @@ async def fetch_statistics_from_relics_run(cache: redis.Redis,
 
         await fix_names_and_add_ids(data, translation_dict, item_ids)
 
-        with open(os.path.join(config['output_dir'], date), 'w') as f:
-            json.dump(data, f)
+        save_statistic_history(data, date, platform)
 
     translation_dict = await fetch_translation_dict_from_relics_run(cache, session)
 
@@ -61,7 +76,7 @@ async def get_all_saved_dates_from_relics_run(cache: redis.Redis,
     """
     data = await fetch_api_data(cache=cache,
                                 session=session,
-                                url=RELICS_RUN_HISTORY_URL + get_platform_path(platform),
+                                url=f"{RELICS_RUN_HISTORY_URL}/{get_platform_path(platform)}",
                                 return_type='text')
 
     # Parses the HTML and finds all links to JSON files
@@ -86,6 +101,10 @@ def get_saved_data(platform: str = 'pc') -> set:
     if not os.path.exists(config['output_dir']):
         os.makedirs(config['output_dir'])
 
+    output_dir = get_statistic_path(platform)
+
+    os.makedirs(output_dir, exist_ok=True)  # Create directory if it does not exist
+
     for file in os.listdir(get_statistic_path(platform)):
         if file.endswith(".json"):
             saved_data.add(file)
@@ -94,15 +113,18 @@ def get_saved_data(platform: str = 'pc') -> set:
 
 
 async def get_dates_to_fetch(cache: redis.Redis,
-                             session: aiohttp.ClientSession) -> set:
+                             session: aiohttp.ClientSession,
+                             platform: str = 'pc') -> set:
     """
     Gets the dates for which statistics need to be fetched
     :param cache: redis cache
     :param session: aiohttp session
+    :param platform: platform for which to get dates
     :return: set of dates to fetch
     """
-    date_list = await get_all_saved_dates_from_relics_run(cache, session)  # Get all possible dates
-    saved_data = get_saved_data()  # Get the dates for which statistics have already been fetched
+    date_list = await get_all_saved_dates_from_relics_run(cache, session, platform)  # Get all possible dates
+    print(date_list)
+    saved_data = get_saved_data(platform)  # Get the dates for which statistics have already been fetched
     date_list = date_list - saved_data  # Remove the dates for which statistics have already been fetched
 
     return date_list

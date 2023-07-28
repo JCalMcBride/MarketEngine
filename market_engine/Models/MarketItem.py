@@ -150,14 +150,14 @@ class MarketItem:
         Fetches the item's price history from the database.
         :return: None
         """
-        self.price_history = self.database.get_item_price_history(self.item_id)
+        self.price_history = self.database.get_item_price_history(self.item_id, self.platform)
 
     def get_demand_history(self) -> None:
         """
         Fetches the item's demand history from the database.
         :return: None
         """
-        self.demand_history = self.database.get_item_demand_history(self.item_id)
+        self.demand_history = self.database.get_item_demand_history(self.item_id, self.platform)
 
     def add_alias(self, alias: str) -> None:
         """

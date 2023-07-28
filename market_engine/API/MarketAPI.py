@@ -152,3 +152,17 @@ def save_statistic_history(statistic_history_dict: Dict[str, Dict[str, List[Dict
                     json.dump(history, fp)
         except Exception as e:
             print(f"Error writing to file {filename}: {str(e)}")
+
+
+def save_item_data(items, item_ids, item_info):
+    output_dir = os.path.join(config['output_dir'], 'item_data')
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(os.path.join(output_dir, 'items.json'), 'w') as f:
+        json.dump(items, f)
+
+    with open(os.path.join(output_dir, 'item_ids.json'), 'w') as f:
+        json.dump(item_ids, f)
+
+    with open(os.path.join(output_dir, 'item_info.json'), 'w') as f:
+        json.dump(item_info, f)

@@ -151,6 +151,9 @@ def get_file_list(date: datetime, platform: str = 'pc'):
     """
     file_list = []
     output_directory = get_statistic_path(platform)
+
+    os.makedirs(output_directory, exist_ok=True)  # Create directory if it does not exist
+
     for file in os.listdir(output_directory):
         if file.endswith(".json"):
             if date is not None:
@@ -181,32 +184,56 @@ class MarketDatabase:
     """
     Class for interacting with the database
     """
-    _GET_ITEM_QUERY: str = "SELECT * FROM items WHERE item_name=%s"
-    _GET_ITEM_SUBTYPES_QUERY: str = "SELECT * FROM item_subtypes WHERE item_id=%s"
-    _GET_ITEM_STATISTICS_QUERY: str = ("SELECT datetime, avg_price "
-                                       "FROM item_statistics "
-                                       "WHERE item_id=%s "
-                                       "AND order_type='closed'")
-    _GET_ITEM_VOLUME_QUERY: str = ("SELECT volume "
-                                   "FROM item_statistics "
-                                   "WHERE datetime >= NOW() - INTERVAL %s DAY "
-                                   "AND order_type='closed' "
-                                   "AND item_id = %s")
-    _BASE_ITEMS_QUERY: str = ("SELECT items.id, items.item_name, items.item_type, "
-                              "items.url_name, items.thumb, items.max_rank, GROUP_CONCAT(item_aliases.alias) AS aliases")
+    _GET_ITEM_QUERY: str = """
+    SELECT * 
+    FROM items 
+    WHERE item_name=%s
+    """
 
-    _GET_ALL_ITEMS_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
-                                 "FROM items LEFT JOIN item_aliases ON items.id = item_aliases.item_id "
-                                 "GROUP BY items.id")
+    _GET_ITEM_SUBTYPES_QUERY: str = """
+    SELECT * 
+    FROM item_subtypes 
+    WHERE item_id=%s"""
 
-    _GET_ITEMS_IN_SET_QUERY: str = (f"{_BASE_ITEMS_QUERY} "
-                                    "FROM items_in_set "
-                                    "INNER JOIN items "
-                                    "ON items_in_set.item_id = items.id "
-                                    "LEFT JOIN item_aliases ON items.id = item_aliases.item_id "
-                                    "WHERE items_in_set.set_id = %s "
-                                    "GROUP BY items.id, items.item_name, items.item_type, items.url_name, items.thumb, items.max_rank")
-    _GET_USER_QUERY = "SELECT ingame_name FROM market_users WHERE user_id=%s"
+    _GET_ITEM_STATISTICS_QUERY: str = """
+    SELECT datetime, avg_price 
+    FROM item_statistics 
+    WHERE item_id=%s 
+    AND order_type='closed' 
+    AND platform=%s
+    """
+
+    _GET_ITEM_VOLUME_QUERY: str = """
+    SELECT volume 
+    FROM item_statistics 
+    WHERE datetime >= NOW() - INTERVAL %s DAY 
+    AND order_type='closed' 
+    AND item_id = %s 
+    AND platform=%s
+    """
+
+    _BASE_ITEMS_QUERY: str = """
+    SELECT items.id, items.item_name, items.item_type, items.url_name, 
+    items.thumb, items.max_rank, GROUP_CONCAT(item_aliases.alias) AS aliases
+    """
+
+    _GET_ALL_ITEMS_QUERY: str = f"""
+    {_BASE_ITEMS_QUERY} 
+    FROM items 
+    LEFT JOIN item_aliases ON items.id = item_aliases.item_id 
+    GROUP BY items.id
+    """
+
+    _GET_ITEMS_IN_SET_QUERY: str = f"""
+    {_BASE_ITEMS_QUERY}
+    FROM items_in_set
+    INNER JOIN items
+    ON items_in_set.item_id = items.id
+    LEFT JOIN item_aliases ON items.id = item_aliases.item_id
+    WHERE items_in_set.set_id = %s
+    GROUP BY items.id, items.item_name, items.item_type, items.url_name, items.thumb, items.max_rank
+    """
+    _GET_USER_QUERY = "SELECT ingame_name FROM market_users WHERE user_id=%s"""
     _GET_ALL_WORD_ALIASES_QUERY: str = "SELECT alias, word FROM word_aliases"
     _GET_CORRECT_CASE_QUERY = """
         SELECT user_id, ingame_name
@@ -227,6 +254,7 @@ class MarketDatabase:
         FROM item_statistics
         WHERE item_id=%s
         AND order_type='closed'
+        AND platform=%s
     """
 
     _GET_DEMAND_HISTORY_QUERY = """
@@ -234,34 +262,74 @@ class MarketDatabase:
         FROM item_statistics
         WHERE item_id=%s
         AND order_type='closed'
+        AND platform=%s
     """
-    _GET_MOST_RECENT_DATE_QUERY = """SELECT MAX(datetime) FROM item_statistics"""
-    _GET_ITEM_DICT_QUERY = """SELECT item_name, id FROM items"""
-    _GET_ALL_SETS_QUERY = """select id, url_name from items where item_name like '%Set'"""
 
-    _ADD_ITEM_ALIAS_QUERY: str = "INSERT INTO item_aliases (item_id, alias) VALUES (%s, %s)"
-    _REMOVE_ITEM_ALIAS_QUERY: str = "DELETE FROM item_aliases WHERE item_id=%s AND alias=%s"
+    _GET_MOST_RECENT_DATE_QUERY = """
+    SELECT MAX(datetime) FROM item_statistics where platform = %s
+    """
 
-    _ADD_WORD_ALIAS_QUERY: str = "INSERT INTO word_aliases (word, alias) VALUES (%s, %s)"
+    _GET_ITEM_DICT_QUERY = """
+    SELECT item_name, id FROM items
+    """
+
+    _GET_ALL_SETS_QUERY = """
+    SELECT id, url_name 
+    FROM items 
+    WHERE item_name 
+    LIKE '%Set'
+    """
+
+    _ADD_ITEM_ALIAS_QUERY: str = """
+    INSERT INTO item_aliases (item_id, alias) 
+    VALUES (%s, %s)
+    """
+
+    _REMOVE_ITEM_ALIAS_QUERY: str = """
+    DELETE FROM item_aliases 
+    WHERE item_id=%s 
+    AND alias=%s
+    """
+
+    _ADD_WORD_ALIAS_QUERY: str = """
+    INSERT INTO word_aliases (word, alias) 
+    VALUES (%s, %s)
+    """
 
     _UPSERT_USER_QUERY = """
         INSERT INTO market_users (user_id, ingame_name) 
         VALUES (%s, %s) 
         ON DUPLICATE KEY UPDATE ingame_name=VALUES(ingame_name)
     """
+
     _INSERT_ITEM_QUERY: str = """
-            INSERT IGNORE INTO items (id, item_name, url_name, thumb, max_rank)
-            VALUES (%s, %s, %s, %s, %s)
-        """
+        INSERT IGNORE INTO items (id, item_name, url_name, thumb, max_rank)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+
     _INSERT_USERNAME_HISTORY_QUERY = """
         INSERT INTO username_history (user_id, ingame_name, datetime) 
         VALUES (%s, %s, %s)
     """
-    _INSERT_ITEM_TAGS_QUERY = """INSERT IGNORE INTO item_tags (item_id, tag) VALUES (%s, %s)"""
-    _INSERT_ITEM_SUBTYPE_QUERY = """INSERT IGNORE INTO item_subtypes (item_id, sub_type) VALUES (%s, %s)"""
-    _INSERT_ITEMS_IN_SET_QUERY = """INSERT IGNORE INTO items_in_set (set_id, item_id) VALUES (%s, %s)"""
 
-    _SET_ITEM_CATEGORIES_QUERY = """UPDATE items SET item_type = %s WHERE id = %s"""
+    _INSERT_ITEM_TAGS_QUERY = """
+    INSERT IGNORE INTO item_tags (item_id, tag) 
+    VALUES (%s, %s)
+    """
+
+    _INSERT_ITEM_SUBTYPE_QUERY = """
+    INSERT IGNORE INTO item_subtypes (item_id, sub_type) 
+    VALUES (%s, %s)
+    """
+
+    _INSERT_ITEMS_IN_SET_QUERY = """INSERT IGNORE INTO items_in_set (set_id, item_id) 
+    VALUES (%s, %s)
+    """
+
+    _SET_ITEM_CATEGORIES_QUERY = """
+    UPDATE items 
+    SET item_type = %s 
+    WHERE id = %s"""
 
     def __init__(self, user: str, password: str, host: str, database: str) -> None:
         """
@@ -332,7 +400,7 @@ class MarketDatabase:
         :param item_info: dictionary of item info
         :return: None
         """
-        if items is None or item_ids is None:
+        if any(x is None for x in [items, item_ids, item_info]):
             return
 
         data_list = [
@@ -355,6 +423,9 @@ class MarketDatabase:
         :param item_info: dictionary of item info
         :return: None
         """
+        if item_info is None:
+            return None
+
         data_list = []
         for item in item_info:
             for tag in item_info[item]['tags']:
@@ -369,6 +440,9 @@ class MarketDatabase:
         :param item_info: dictionary of item info
         :return: None
         """
+        if item_info is None:
+            return None
+
         data_list = []
         for item in item_info:
             for subtype in item_info[item]['subtypes']:
@@ -383,6 +457,9 @@ class MarketDatabase:
         :param item_info: dictionary of item info
         :return: None
         """
+        if item_info is None:
+            return None
+
         data_list = []
         for item in item_info:
             for item_in_set in item_info[item]['set_items']:
@@ -420,6 +497,9 @@ class MarketDatabase:
         :param item_categories: dictionary of item types to item ids
         :return: None
         """
+        if item_categories is None:
+            return None
+
         for item_type in item_categories:
             self.execute_query(self._SET_ITEM_CATEGORIES_QUERY,
                                [(item_type, item_id) for item_id in item_categories[item_type].values()],
@@ -443,6 +523,8 @@ class MarketDatabase:
         all_columns = set().union(*(data.keys() for data in data_list))
         columns_str = ', '.join(all_columns)
         placeholders = ', '.join(['%s'] * len(all_columns))
+        columns_str += ', platform'
+        placeholders += ', %s'
 
         insert_query = f"""
             INSERT IGNORE INTO item_statistics ({columns_str})
@@ -454,7 +536,7 @@ class MarketDatabase:
             if 'order_type' not in data:
                 data['order_type'] = 'closed'
 
-        values = [tuple(data.get(key, None) for key in all_columns) for data in data_list]
+        values = [tuple(data.get(key, None) for key in all_columns) + (platform,) for data in data_list]
 
         batch_size = 10_000
         total_batches = (len(values) + batch_size - 1) // batch_size
@@ -464,13 +546,15 @@ class MarketDatabase:
                 batch_values = values[i:i + batch_size]
                 cursor.executemany(insert_query, batch_values)
                 logger.info(f"Progress: Batch {i // batch_size + 1} of {total_batches} completed")
+            self.connection.commit()
 
-    def get_most_recent_statistic_date(self) -> Optional[datetime]:
+    def get_most_recent_statistic_date(self, platform: str = 'pc') -> Optional[datetime]:
         """
         Gets the most recent date in the database
-        :return: the most recent date in the database if applicable, otherwise None
+        :param platform: the platform to fetch data for
+        :return: the most recent date in the database for the given platform if applicable, otherwise None
         """
-        most_recent_datetime: datetime = self.execute_query(self._GET_MOST_RECENT_DATE_QUERY, fetch='one')[0]
+        most_recent_datetime: datetime = self.execute_query(self._GET_MOST_RECENT_DATE_QUERY, platform, fetch='one')[0]
 
         most_recent_date = None
         if most_recent_datetime is not None:
@@ -545,38 +629,42 @@ class MarketDatabase:
                                        fetch_demand_history=fetch_demand_history,
                                        platform=platform)
 
-    def get_item_statistics(self, item_id: str) -> Tuple[Tuple[Any, ...], ...]:
+    def get_item_statistics(self, item_id: str, platform: str = 'pc') -> Tuple[Tuple[Any, ...], ...]:
         """
         Gets item statistics from the database
         :param item_id: the item to get statistics for
+        :param platform: the platform to fetch data for
         :return: the item statistics
         """
-        return self.execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, fetch='all')
+        return self.execute_query(self._GET_ITEM_STATISTICS_QUERY, item_id, platform, fetch='all')
 
-    def get_item_volume(self, item_id: str, days: int = 31) -> Tuple[Tuple[Any, ...], ...]:
+    def get_item_volume(self, item_id: str, days: int = 31, platform: str = 'pc') -> Tuple[Tuple[Any, ...], ...]:
         """
         Gets item volume from the database
         :param item_id: the item to get volume for
         :param days: the number of days to get volume for
+        :param platform: the platform to fetch data for
         :return: the item volume
         """
-        return self.execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, fetch='all')
+        return self.execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, platform, fetch='all')
 
-    def get_item_price_history(self, item_id: str) -> Dict[str, str]:
+    def get_item_price_history(self, item_id: str, platform: str = 'pc') -> Dict[str, str]:
         """
         Gets item price history from the database
         :param item_id: the item to get price history for
+        :param platform: the platform to fetch data for
         :return: the item price history
         """
-        return dict(self.execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, fetch='all'))
+        return dict(self.execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, platform, fetch='all'))
 
-    def get_item_demand_history(self, item_id: str) -> Dict[str, str]:
+    def get_item_demand_history(self, item_id: str, platform: str = 'pc') -> Dict[str, str]:
         """
         Gets item demand history from the database
         :param item_id: the item to get demand history for
+        :param platform: the platform to fetch data for
         :return: the item demand history
         """
-        return dict(self.execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, fetch='all'))
+        return dict(self.execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, platform, fetch='all'))
 
     def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
         """
