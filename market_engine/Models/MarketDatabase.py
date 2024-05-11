@@ -747,3 +747,19 @@ class MarketDatabase:
 
         if history_queries:
             self.execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)
+
+    def get_price_history_dicts(self, item_names: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
+        """
+        Gets price history dictionaries for a list of item names
+        :param item_names: the list of item names to get price history for
+        :param platform: the platform to fetch data for
+        :return: a dictionary mapping item names to price history dictionaries
+        """
+        price_history_dicts = {}
+        for item_name in item_names:
+            fuzzy_item = self._get_fuzzy_item(item_name)
+            if fuzzy_item is not None:
+                item_id = fuzzy_item['id']
+                price_history = self.get_item_price_history(item_id, platform)
+                price_history_dicts[item_name] = price_history
+        return price_history_dicts
