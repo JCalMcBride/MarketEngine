@@ -332,7 +332,22 @@ class MarketDatabase:
     SET item_type = %s 
     WHERE id = %s"""
 
-    def __init__(self, user: str, password: str, host: str, database: str) -> None:
+    _GET_LAST_AVERAGE_PRICES_QUERY = """
+    SELECT i.item_name, COALESCE(s.avg_price, 0) as last_average_price
+    FROM items i
+    LEFT JOIN (
+        SELECT item_id, avg_price
+        FROM (
+            SELECT item_id, avg_price,
+                   ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY datetime DESC) as rn
+            FROM item_statistics
+            WHERE platform = %s AND order_type = 'closed'
+        ) s
+        WHERE s.rn = 1
+    ) s ON i.id = s.item_id
+    """
+
+    def __init__(self, user: str, password: str, host: str, database: str, initial_build: bool = False) -> None:
         """
         Initializes the database
         :param user: the username to connect to the database with
@@ -345,8 +360,44 @@ class MarketDatabase:
                                                       host=host,
                                                       database=database)
 
-        self.all_items = self.get_all_items()
         self.users: Dict[str, str] = {}
+
+        if initial_build:
+            return
+
+        try:
+            self.all_items = self.get_all_items()
+            self.item_price_dict = self.get_last_average_prices()
+        except pymysql.err.ProgrammingError:
+            logger.error("Database not initialized, database functions will not work.")
+
+    def get_item_price(self, item_name: str) -> float:
+        """
+        Gets the most recent average price for an item from the item price dictionary
+        :param item_name: the name of the item to get the price for
+        :return: the most recent average price if it exists, otherwise 0
+        """
+        item_name_lower = item_name.lower()
+        price = self.item_price_dict.get(item_name_lower)
+        if price is not None:
+            return price
+
+        # Check if the item is a set
+        set_name = f"{item_name_lower} set"
+        price = self.item_price_dict.get(set_name)
+        if price is not None:
+            return price
+
+        return 0
+
+    def get_last_average_prices(self, platform: str = 'pc') -> Dict[str, float]:
+        """
+        Retrieves the last average prices for all items from the database
+        :param platform: the platform to fetch data for
+        :return: a dictionary mapping item names to their last average price
+        """
+        results = self.execute_query(self._GET_LAST_AVERAGE_PRICES_QUERY, platform, fetch='all')
+        return {item_name.lower(): float(price) for item_name, price in results}
 
     def execute_query(self, query: str, *params, fetch: str = 'all',
                       commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
@@ -673,6 +724,11 @@ class MarketDatabase:
         :param item_name: the item name to get a match for
         :return: the best match if applicable, otherwise None
         """
+        # Check if the item is an ID in self.all_items
+        for item in self.all_items:
+            if item['id'] == item_name:
+                return item
+
         best_score, best_item = find_best_match(item_name, self.all_items, self.get_word_aliases())
 
         return best_item if best_score > 50 else None
@@ -753,13 +809,34 @@ class MarketDatabase:
         Gets price history dictionaries for a list of item names
         :param item_names: the list of item names to get price history for
         :param platform: the platform to fetch data for
-        :return: a dictionary mapping item names to price history dictionaries
+        :return: a dictionary mapping dates to dictionaries of item prices
         """
-        price_history_dicts = {}
+        # Create a dictionary mapping item names to item IDs
+        item_id_dict = {item['item_name']: item['id'] for item in self.all_items}
+
+        # Initialize price histories dictionary
+        price_histories = {}
+
+        # Get unique dates from price histories of all items
+        dates = set()
         for item_name in item_names:
-            fuzzy_item = self._get_fuzzy_item(item_name)
-            if fuzzy_item is not None:
-                item_id = fuzzy_item['id']
+            if item_name in item_id_dict:
+                item_id = item_id_dict[item_name]
                 price_history = self.get_item_price_history(item_id, platform)
-                price_history_dicts[item_name] = price_history
-        return price_history_dicts
+                dates.update(price_history.keys())
+
+        dates = sorted(dates)
+
+        # Initialize price histories for each date
+        for date in dates:
+            price_histories[date] = {item_name: 0 for item_name in item_names}
+
+        # Populate price histories with available prices
+        for item_name in item_names:
+            if item_name in item_id_dict:
+                item_id = item_id_dict[item_name]
+                price_history = self.get_item_price_history(item_id, platform)
+                for date, price in price_history.items():
+                    price_histories[date][item_name] = float(price)
+
+        return price_histories

@@ -279,7 +279,8 @@ class MarketItem:
             orders = await fetch_api_data(cache=cache,
                                           session=session,
                                           url=f"{self.base_api_url}/items/{self.item_url_name}/orders",
-                                          headers=get_wfm_headers(platform=self.platform))
+                                          headers=get_wfm_headers(platform=self.platform),
+                                          expiration=60)
             if orders is None:
                 return
 
