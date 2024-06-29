@@ -1,3 +1,5 @@
+import json
+import os
 import re
 from typing import Dict
 
@@ -175,9 +177,14 @@ def parse_rarity(relic_name: str):
 
 async def get_node_list():
     """
-    Fetches the node list from relics.run
+    Fetches the node list from relics.run, or the base directory
     :return: the node list
     """
+    # Check if exists in current folder
+    if os.path.exists('solNodes.json'):
+        with open('solNodes.json', 'r') as f:
+            return json.load(f)
+
     async with cache_manager() as cache, session_manager() as session:
         return await fetch_api_data(cache=cache,
                                     session=session,

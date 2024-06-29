@@ -39,7 +39,8 @@ class MarketUser:
 
     @classmethod
     async def create(cls, database: "MarketDatabase", user_id: str, username: str,
-                     fetch_user_data: bool = True, fetch_orders: bool = True, fetch_reviews: bool = True):
+                     fetch_user_data: bool = True, fetch_orders: bool = True, fetch_reviews: bool = True,
+                     review_page_nums: Union[int, List[int]] = 1):
         """
         Creates a MarketUser object.
         :param database: database object
@@ -48,6 +49,7 @@ class MarketUser:
         :param fetch_user_data: whether or not to fetch the user's data from warframe.market
         :param fetch_orders: whether or not to fetch the user's orders from warframe.market
         :param fetch_reviews: whether or not to fetch the user's reviews from warframe.market
+        :param review_page_nums: the page number(s) to fetch reviews from (integer or list of integers)
         :return: MarketUser object with the specified data
         """
         obj = cls(database, user_id, username)
@@ -57,12 +59,14 @@ class MarketUser:
             profile = await MarketUser.fetch_user_data(username)
             if profile is not None:
                 obj.set_user_data(profile)
+            else:
+                return None
 
         if fetch_orders:
             tasks.append(obj.fetch_orders())
 
         if fetch_reviews:
-            tasks.append(obj.fetch_reviews())
+            tasks.append(obj.fetch_reviews(review_page_nums))
 
         await asyncio.gather(*tasks)
 
@@ -79,6 +83,7 @@ class MarketUser:
             user_data = await fetch_api_data(session=session,
                                              cache=cache,
                                              url=f"{MarketUser.base_api_url}/profile/{username}")
+
         if user_data is None:
             return
 
@@ -165,19 +170,50 @@ class MarketUser:
 
         self.parse_orders(orders['payload'])
 
-    async def fetch_reviews(self, page_num: str = '1') -> None:
+    async def fetch_reviews(self, page_nums: Union[int, List[int]]) -> None:
         """
-        Fetches the user's reviews from warframe.market
-        :param page_num: the page number to fetch
+        Fetches the user's reviews from warframe.market for the specified page numbers.
+        :param page_nums: the page number(s) to fetch (integer or list of integers)
         :return: None
         """
-        async with cache_manager() as cache, session_manager() as session:
-            reviews = await fetch_api_data(cache=cache,
-                                           session=session,
-                                           url=f"{self.base_api_url}/profile/{self.username}/reviews/{page_num}",
-                                           expiration=60)
+        if isinstance(page_nums, int):
+            page_nums = [page_nums]
 
-        if reviews is None:
-            return
+        tasks = []
+        async with session_manager() as session, cache_manager() as cache:
+            for page_num in page_nums:
+                url = f"{self.base_api_url}/profile/{self.username}/reviews/{page_num}"
+                tasks.append(fetch_api_data(session=session,
+                                            url=url,
+                                            cache=cache,
+                                            expiration=60))
 
-        self.parse_reviews(reviews['payload']['reviews'])
+            results = await asyncio.gather(*tasks)
+
+            for reviews in results:
+                if reviews is not None:
+                    self.parse_reviews(reviews['payload']['reviews'])
+
+    def to_dict(self):
+        """
+        Convert the MarketUser object to a dictionary suitable for JSON serialization.
+        """
+        user_dict = {
+            'user_id': self.user_id,
+            'username': self.username,
+            'profile_url': self.profile_url,
+            'last_seen': self.last_seen,
+            'avatar': self.avatar,
+            'avatar_url': self.avatar_url,
+            'locale': self.locale,
+            'background': self.background,
+            'about': self.about,
+            'reputation': self.reputation,
+            'platform': self.platform,
+            'banned': self.banned,
+            'status': self.status,
+            'region': self.region,
+            'orders': self.orders,
+            'reviews': self.reviews
+        }
+        return user_dict

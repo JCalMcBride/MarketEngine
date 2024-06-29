@@ -2,7 +2,7 @@ import asyncio
 from typing import List, Dict, Union, Tuple, Coroutine, Any, Optional
 
 from ..Common import fetch_api_data, get_wfm_headers, cache_manager, session_manager
-
+from datetime import datetime, timedelta, date
 
 class MarketItem:
     """
@@ -292,3 +292,74 @@ class MarketItem:
         :return: None
         """
         self.parts = [MarketItem(self.database, *item) for item in self.database.get_item_parts(self.item_id)]
+
+    def calculate_volume_statistics(self):
+        now = date.today()
+        print(now)
+        day_ago = now - timedelta(days=1)
+        print(day_ago)
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+        year_ago = now - timedelta(days=365)
+
+        day_total = week_total = month_total = year_total = 0
+        day_count = week_count = month_count = year_count = 0
+
+        for date_obj, volume in self.demand_history.items():
+            if isinstance(date_obj, str):
+                date_obj = datetime.strptime(date_obj, '%Y-%m-%d').date()
+            elif isinstance(date_obj, datetime):
+                date_obj = date_obj.date()
+
+            volume = int(volume)
+
+            if date_obj >= day_ago:
+                day_total += volume
+                day_count += 1
+            if date_obj >= week_ago:
+                week_total += volume
+                week_count += 1
+            if date_obj >= month_ago:
+                month_total += volume
+                month_count += 1
+            if date_obj >= year_ago:
+                year_total += volume
+                year_count += 1
+
+        week_average = week_total / week_count if week_count else 0
+        month_average = month_total / month_count if month_count else 0
+        year_average = year_total / year_count if year_count else 0
+
+        return {
+            'day_total': day_total,
+            'week_total': week_total,
+            'month_total': month_total,
+            'year_total': year_total,
+            'week_average': round(week_average, 2),
+            'month_average': round(month_average, 2),
+            'year_average': round(year_average, 2)
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        volume_stats = self.calculate_volume_statistics()
+        return {
+            'item_id': self.item_id,
+            'item_name': self.item_name,
+            'item_type': self.item_type,
+            'item_url_name': self.item_url_name,
+            'thumb': self.thumb,
+            'thumb_url': self.thumb_url,
+            'max_rank': self.max_rank,
+            'aliases': self.aliases,
+            'item_url': self.item_url,
+            'platform': self.platform,
+            'orders': self.orders,
+            'parts': [part.to_dict() if part else None for part in self.parts],
+            'price_history': self._convert_history_to_str(self.price_history),
+            'demand_history': self._convert_history_to_str(self.demand_history),
+            'volume_statistics': volume_stats
+        }
+
+    def _convert_history_to_str(self, history: Dict[datetime, str]) -> Dict[str, str]:
+        return {date.date().isoformat(): value for date, value in history.items()}
+

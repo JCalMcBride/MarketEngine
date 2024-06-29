@@ -157,6 +157,9 @@ async def fetch_api_data(session: aiohttp.ClientSession,
                 await rate_limiter.acquire()
 
             async with session.get(url, headers=headers) as res:
+                if res.status == 404:
+                    return None
+
                 res.raise_for_status()
                 logger.debug(f"Fetched data for {url}")
                 if return_type == 'json':
