@@ -504,10 +504,13 @@ def gen_type_dict(manifest_dict: dict, parser: dict) -> dict:
                  'Avionics': set(),
                  'Warframes': set(),
                  'PrimeWarframes': set(),
+                 'Necramechs': set(),
+                 'Archwings': set(),
                  'WarframeParts': set(),
                  'PrimeWarframeParts': set(),
                  'Weapons': set(),
                  'PrimeWeapons': set(),
+                 'ArchwingWeapons': set(),
                  'WeaponParts': set(),
                  'PrimeWeaponParts': set(),
                  'Sentinels': set(),
@@ -530,8 +533,10 @@ def gen_type_dict(manifest_dict: dict, parser: dict) -> dict:
     for data in manifest_dict.values():
         for key in data:
             for item in data[key]:
+                archwing = False
                 if "name" in item and "<ARCHWING> " in item['name']:
                     item['name'] = item['name'].replace("<ARCHWING> ", "")
+                    archwing = True
                 if key == "ExportRelicArcane":
                     if 'Relic' in item['name']:
                         type_dict['Relics'].add(item['name'])
@@ -544,11 +549,17 @@ def gen_type_dict(manifest_dict: dict, parser: dict) -> dict:
                 elif key == "ExportWarframes":
                     if 'Prime' in item['name']:
                         type_dict['PrimeWarframes'].add(item['name'])
+                    elif '/Lotus/Powersuits/EntratiMech/' in item['uniqueName']:
+                        type_dict['Necramechs'].add(item['name'])
+                    elif archwing:
+                        type_dict['Archwings'].add(item['name'])
                     else:
                         type_dict['Warframes'].add(item['name'])
                 elif key == "ExportWeapons":
                     if 'Prime' in item['name']:
                         type_dict['PrimeWeapons'].add(item['name'])
+                    elif archwing:
+                        type_dict['ArchwingWeapons'].add(item['name'])
                     else:
                         type_dict['Weapons'].add(item['name'])
                 elif key == "ExportSentinels":
