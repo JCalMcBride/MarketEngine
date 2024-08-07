@@ -45,6 +45,7 @@ class MarketItem:
         self.part_demand_history_fetched: bool = False
         self.price_history: Dict[str, str] = {}
         self.demand_history: Dict[str, str] = {}
+        self.last_average_price = self.database.get_item_price(self.item_name)
         self.platform = platform
 
     @classmethod
@@ -353,6 +354,7 @@ class MarketItem:
             'platform': self.platform,
             'orders': self.orders,
             'parts': [part.to_dict() if part else None for part in self.parts],
+            'last_average_price': self.last_average_price,
             'price_history': self._convert_history_to_str(self.price_history),
             'demand_history': self._convert_history_to_str(self.demand_history),
             'volume_statistics': volume_stats
