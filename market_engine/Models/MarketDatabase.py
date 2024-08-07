@@ -102,7 +102,7 @@ def find_best_match(item_name: str, items: List[Dict[str, Any]],
     :return: a tuple containing the best score and the best match
     """
     best_score, best_item = 0, None
-    common_words = {'arcane', 'prime', 'scene', 'set'}
+    common_words = {'prime', 'scene', 'set'}
 
     item_name = replace_aliases(item_name, word_aliases)
     item_name = remove_common_words(item_name, common_words)

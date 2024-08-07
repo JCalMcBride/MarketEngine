@@ -295,9 +295,7 @@ class MarketItem:
 
     def calculate_volume_statistics(self):
         now = date.today()
-        print(now)
         day_ago = now - timedelta(days=1)
-        print(day_ago)
         week_ago = now - timedelta(days=7)
         month_ago = now - timedelta(days=30)
         year_ago = now - timedelta(days=365)
