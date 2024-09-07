@@ -1,6 +1,7 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+
 from typing import Dict, List, Any, Optional, Tuple, Union
 
 import pymysql
@@ -102,7 +103,7 @@ def find_best_match(item_name: str, items: List[Dict[str, Any]],
     :return: a tuple containing the best score and the best match
     """
     best_score, best_item = 0, None
-    common_words = {'prime', 'scene', 'set'}
+    common_words = {'arcane', 'prime', 'scene', 'set'}
 
     item_name = replace_aliases(item_name, word_aliases)
     item_name = remove_common_words(item_name, common_words)
@@ -346,6 +347,30 @@ class MarketDatabase:
         WHERE s.rn = 1
     ) s ON i.id = s.item_id
     """
+
+    _GET_ITEM_STATISTICS_DICT_QUERY = """
+    SELECT 
+        DATE(datetime) as date,
+        volume,
+        min_price,
+        max_price,
+        avg_price,
+        wa_price,
+        median,
+        moving_avg,
+        open_price,
+        closed_price,
+        mod_rank,
+        donch_bot,
+        donch_top
+    FROM item_statistics
+    WHERE item_id = %s
+    AND platform = %s
+    AND order_type = %s
+    AND datetime BETWEEN %s AND %s
+    ORDER BY datetime
+    """
+
 
     def __init__(self, user: str, password: str, host: str, database: str, initial_build: bool = False) -> None:
         """
@@ -804,39 +829,65 @@ class MarketDatabase:
         if history_queries:
             self.execute_query(self._INSERT_USERNAME_HISTORY_QUERY, history_queries, commit=True, many=True)
 
-    def get_price_history_dicts(self, item_names: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
+    def get_item_statistics_dict(self, item_id: str, platform: str = 'pc', order_type: str = 'closed',
+                                 start_date: Optional[datetime] = None, end_date: Optional[datetime] = None,
+                                 days: Optional[int] = None, fields: Optional[List[str]] = None) -> Dict[
+        str, Dict[str, Any]]:
         """
-        Gets price history dictionaries for a list of item names
-        :param item_names: the list of item names to get price history for
-        :param platform: the platform to fetch data for
-        :return: a dictionary mapping dates to dictionaries of item prices
+        Retrieves filtered statistic data for a given item in a dictionary format.
+
+        :param item_id: The ID of the item to retrieve statistics for.
+        :param platform: The platform to fetch data for (default is 'pc').
+        :param order_type: The type of order to filter by (default is 'closed').
+        :param start_date: The start date for filtering data.
+        :param end_date: The end date for filtering data (default is the most recent date with data).
+        :param days: Number of days to retrieve data for (overrides start_date if provided).
+        :param fields: List of fields to include in the result (default is all fields).
+        :return: A dictionary where keys are dates and values are dictionaries of statistic data.
         """
-        # Create a dictionary mapping item names to item IDs
-        item_id_dict = {item['item_name']: item['id'] for item in self.all_items}
+        most_recent_date = self.get_most_recent_statistic_date(platform)
 
-        # Initialize price histories dictionary
-        price_histories = {}
+        if most_recent_date is None:
+            return {}
 
-        # Get unique dates from price histories of all items
-        dates = set()
-        for item_name in item_names:
-            if item_name in item_id_dict:
-                item_id = item_id_dict[item_name]
-                price_history = self.get_item_price_history(item_id, platform)
-                dates.update(price_history.keys())
+        if end_date is None or end_date > most_recent_date:
+            end_date = most_recent_date
 
-        dates = sorted(dates)
+        if days is not None:
+            start_date = end_date - timedelta(days=days - 1)  # -1 because we want to include the end_date
+        elif start_date is None:
+            start_date = end_date - timedelta(days=364)  # Default to last 365 days
 
-        # Initialize price histories for each date
-        for date in dates:
-            price_histories[date] = {item_name: 0 for item_name in item_names}
+        results = self.execute_query(self._GET_ITEM_STATISTICS_DICT_QUERY,
+                                     item_id, platform, order_type, start_date, end_date,
+                                     fetch='all')
 
-        # Populate price histories with available prices
-        for item_name in item_names:
-            if item_name in item_id_dict:
-                item_id = item_id_dict[item_name]
-                price_history = self.get_item_price_history(item_id, platform)
-                for date, price in price_history.items():
-                    price_histories[date][item_name] = float(price)
+        return self._process_statistics_results(results, fields)
 
-        return price_histories
+    @staticmethod
+    def _process_statistics_results(results: List[Tuple], fields: Optional[List[str]] = None) -> Dict[
+        str, Dict[str, Any]]:
+        """
+        Helper function to process and filter statistics results.
+
+        :param results: Raw results from the database query.
+        :param fields: List of fields to include in the result (default is all fields).
+        :return: Processed and filtered statistics dictionary.
+        """
+        all_fields = ['volume', 'min_price', 'max_price', 'avg_price', 'wa_price', 'median',
+                      'moving_avg', 'open_price', 'closed_price', 'mod_rank', 'donch_bot', 'donch_top']
+
+        if fields is None:
+            fields = all_fields
+        else:
+            fields = [field for field in fields if field in all_fields]
+
+        statistics_dict = {}
+        for row in results:
+            date = row[0].strftime('%Y-%m-%d')
+            statistics_dict[date] = {
+                field: float(row[all_fields.index(field) + 1]) if row[all_fields.index(field) + 1] is not None else None
+                for field in fields
+            }
+
+        return statistics_dict
