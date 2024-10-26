@@ -84,21 +84,21 @@ class MarketItem:
         if fetch_part_orders:
             tasks += obj.get_part_orders_tasks()
 
-            if fetch_price_history:
-                for part in obj.parts:
-                    if part is not None:
-                        part.get_price_history()
-
-            if fetch_demand_history:
-                for part in obj.parts:
-                    if part is not None:
-                        part.get_demand_history()
+        item_ids = [obj.item_id] + [part.item_id for part in obj.parts if part is not None]
 
         if fetch_price_history:
-            obj.get_price_history()
+            price_history = obj.database.get_item_price_history(item_ids, platform)
+            obj.price_history = price_history.get(obj.item_id, {})
+            for part in obj.parts:
+                if part is not None:
+                    part.price_history = price_history.get(part.item_id, {})
 
         if fetch_demand_history:
-            obj.get_demand_history()
+            demand_history = obj.database.get_item_demand_history(item_ids, platform)
+            obj.demand_history = demand_history.get(obj.item_id, {})
+            for part in obj.parts:
+                if part is not None:
+                    part.demand_history = demand_history.get(part.item_id, {})
 
         await asyncio.gather(*tasks)
 

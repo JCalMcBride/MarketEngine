@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple, Union
 
 import pymysql
+import pymysqlpool
 from fuzzywuzzy import fuzz
 from pymysql import Connection
 from pytz import timezone
@@ -103,7 +104,7 @@ def find_best_match(item_name: str, items: List[Dict[str, Any]],
     :return: a tuple containing the best score and the best match
     """
     best_score, best_item = 0, None
-    common_words = {'arcane', 'prime', 'scene', 'set'}
+    common_words = {'prime', 'scene', 'set'}
 
     item_name = replace_aliases(item_name, word_aliases)
     item_name = remove_common_words(item_name, common_words)
@@ -197,6 +198,12 @@ class MarketDatabase:
     FROM item_subtypes 
     WHERE item_id=%s"""
 
+    _GET_AVERAGE_DEMAND_QUERY = """
+    SELECT item_id, average_demand
+    FROM item_average_demand
+    WHERE item_id IN ({}) AND platform = %s
+    """
+
     _GET_ITEM_STATISTICS_QUERY: str = """
     SELECT datetime, avg_price 
     FROM item_statistics 
@@ -252,19 +259,17 @@ class MarketDatabase:
     """
 
     _GET_PRICE_HISTORY_QUERY = """
-        SELECT datetime, avg_price
-        FROM item_statistics
-        WHERE item_id=%s
-        AND order_type='closed'
-        AND platform=%s
+    SELECT item_id, datetime, avg_price
+    FROM item_statistics
+    WHERE item_id IN ({}) AND platform=%s AND order_type='closed'
+    ORDER BY datetime
     """
 
     _GET_DEMAND_HISTORY_QUERY = """
-        SELECT datetime, volume
-        FROM item_statistics
-        WHERE item_id=%s
-        AND order_type='closed'
-        AND platform=%s
+    SELECT item_id, datetime, volume
+    FROM item_statistics
+    WHERE item_id IN ({}) AND platform=%s AND order_type='closed'
+    ORDER BY datetime
     """
 
     _GET_MOST_RECENT_DATE_QUERY = """
@@ -334,12 +339,12 @@ class MarketDatabase:
     WHERE id = %s"""
 
     _GET_LAST_AVERAGE_PRICES_QUERY = """
-    SELECT i.item_name, COALESCE(s.avg_price, 0) as last_average_price
+    SELECT i.item_name, COALESCE(s.median, 0) as last_average_price
     FROM items i
     LEFT JOIN (
-        SELECT item_id, avg_price
+        SELECT item_id, median
         FROM (
-            SELECT item_id, avg_price,
+            SELECT item_id, median,
                    ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY datetime DESC) as rn
             FROM item_statistics
             WHERE platform = %s AND order_type = 'closed'
@@ -380,10 +385,10 @@ class MarketDatabase:
         :param host: the host to connect to the database with
         :param database: the database to connect to
         """
-        self.connection: Connection = pymysql.connect(user=user,
-                                                      password=password,
-                                                      host=host,
-                                                      database=database)
+        config = {'host': host, 'user': user, 'password': password, 'database': database,
+                  'autocommit': True}
+
+        self.pool1 = pymysqlpool.ConnectionPool(pre_create_num=2, name='pool1', **config)
 
         self.users: Dict[str, str] = {}
 
@@ -435,21 +440,20 @@ class MarketDatabase:
         :param many: whether or not to execute the query with multiple parameters
         :return: the result of the query if applicable
         """
-        self.connection.ping(reconnect=True)
+        with self.pool1.get_connection(pre_ping=True) as con1:
+            with con1.cursor() as cur:
+                if many:
+                    cur.executemany(query, params[0])
+                else:
+                    cur.execute(query, params)
 
-        with self.connection.cursor() as cur:
-            if many:
-                cur.executemany(query, params[0])
-            else:
-                cur.execute(query, params)
+                if commit:
+                    con1.commit()
 
-            if commit:
-                self.connection.commit()
-
-            if fetch == 'one':
-                return cur.fetchone()
-            elif fetch == 'all':
-                return cur.fetchall()
+                if fetch == 'one':
+                    return cur.fetchone()
+                elif fetch == 'all':
+                    return cur.fetchall()
 
     def get_all_items(self) -> List[dict]:
         """
@@ -725,23 +729,81 @@ class MarketDatabase:
         """
         return self.execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, platform, fetch='all')
 
-    def get_item_price_history(self, item_id: str, platform: str = 'pc') -> Dict[str, str]:
+    def get_item_price_history(self, item_ids: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
         """
         Gets item price history from the database
         :param item_id: the item to get price history for
         :param platform: the platform to fetch data for
         :return: the item price history
         """
-        return dict(self.execute_query(self._GET_PRICE_HISTORY_QUERY, item_id, platform, fetch='all'))
+        placeholders = ','.join(['%s'] * len(item_ids))
+        query = self._GET_PRICE_HISTORY_QUERY.format(placeholders)
+        results = self.execute_query(query, *item_ids, platform, fetch='all')
 
-    def get_item_demand_history(self, item_id: str, platform: str = 'pc') -> Dict[str, str]:
+        price_history = {}
+        for item_id, datetime, avg_price in results:
+            if item_id not in price_history:
+                price_history[item_id] = {}
+            price_history[item_id][datetime] = avg_price
+
+        return price_history
+
+    def update_average_demand(self, platform: str = 'pc'):
+        """
+        Updates the average demand for items in the database
+        :param platform: the platform to update data for
+        :return: None
+        """
+        update_query = """
+        INSERT INTO item_average_demand (item_id, platform, average_demand, last_updated)
+        SELECT 
+            item_id, 
+            %s AS platform,
+            AVG(volume) AS average_demand,
+            NOW() AS last_updated
+        FROM item_statistics
+        WHERE platform = %s
+          AND order_type = 'closed'
+          AND datetime >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+        GROUP BY item_id
+        ON DUPLICATE KEY UPDATE
+            average_demand = VALUES(average_demand),
+            last_updated = VALUES(last_updated)
+        """
+        self.execute_query(update_query, platform, platform)
+
+    def get_item_demand_history(self, item_ids: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
         """
         Gets item demand history from the database
         :param item_id: the item to get demand history for
         :param platform: the platform to fetch data for
         :return: the item demand history
         """
-        return dict(self.execute_query(self._GET_DEMAND_HISTORY_QUERY, item_id, platform, fetch='all'))
+        placeholders = ','.join(['%s'] * len(item_ids))
+        query = self._GET_DEMAND_HISTORY_QUERY.format(placeholders)
+        results = self.execute_query(query, *item_ids, platform, fetch='all')
+
+        demand_history = {}
+        for item_id, datetime, volume in results:
+            if item_id not in demand_history:
+                demand_history[item_id] = {}
+            demand_history[item_id][datetime] = volume
+
+        return demand_history
+
+    def get_item_average_demand(self, item_ids: List[str], platform: str = 'pc') -> Dict[str, float]:
+        """
+        Gets pre-calculated average demand for items from the database
+        :param item_ids: the items to get average demand for
+        :param platform: the platform to fetch data for
+        :return: a dictionary of item_id to average demand
+        """
+        placeholders = ','.join(['%s'] * len(item_ids))
+        query = self._GET_AVERAGE_DEMAND_QUERY.format(placeholders)
+        results = self.execute_query(query, *item_ids, platform, fetch='all')
+
+        average_demand = {item_id: avg_demand for item_id, avg_demand in results}
+        return average_demand
 
     def _get_fuzzy_item(self, item_name: str) -> Optional[Dict[str, str]]:
         """

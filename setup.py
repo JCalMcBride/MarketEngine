@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='market-engine',
-    version='0.1.54',
+    version='0.1.58',
     description='Engine for easily getting the orders, statistics, and other stats from warframe.market.',
     author='Jacob McBride',
     author_email='jake55111@gmail.com',
@@ -20,6 +20,7 @@ setup(
         'beautifulsoup4~=4.12.2',
         'Markdown~=3.4.3',
         'cryptography~=42.0.5',
-        'tenacity~=8.2.2'
+        'tenacity~=8.2.2',
+        'pymysql-pool~=0.4.6'
     ],
 )
