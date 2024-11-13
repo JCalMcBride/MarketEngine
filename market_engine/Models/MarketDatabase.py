@@ -953,3 +953,40 @@ class MarketDatabase:
             }
 
         return statistics_dict
+
+    def get_price_history_dicts(self, item_names: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
+        """
+        Gets price history dictionaries for a list of item names
+        :param item_names: the list of item names to get price history for
+        :param platform: the platform to fetch data for
+        :return: a dictionary mapping dates to dictionaries of item prices
+        """
+        # Create a dictionary mapping item names to item IDs
+        item_id_dict = {item['item_name']: item['id'] for item in self.all_items}
+
+        # Initialize price histories dictionary
+        price_histories = {}
+
+        # Get unique dates from price histories of all items
+        dates = set()
+        for item_name in item_names:
+            if item_name in item_id_dict:
+                item_id = item_id_dict[item_name]
+                price_history = self.get_item_price_history(item_id, platform)
+                dates.update(price_history.keys())
+
+        dates = sorted(dates)
+
+        # Initialize price histories for each date
+        for date in dates:
+            price_histories[date] = {item_name: 0 for item_name in item_names}
+
+        # Populate price histories with available prices
+        for item_name in item_names:
+            if item_name in item_id_dict:
+                item_id = item_id_dict[item_name]
+                price_history = self.get_item_price_history(item_id, platform)
+                for date, price in price_history.items():
+                    price_histories[date][item_name] = float(price)
+
+        return price_histories
