@@ -82,7 +82,8 @@ class MarketUser:
         async with cache_manager() as cache, session_manager() as session:
             user_data = await fetch_api_data(session=session,
                                              cache=cache,
-                                             url=f"{MarketUser.base_api_url}/profile/{username}")
+                                             url=f"{MarketUser.base_api_url}/profile/{username}",
+                                             expiration=20)
 
         if user_data is None:
             return
