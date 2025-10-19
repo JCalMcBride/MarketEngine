@@ -11,6 +11,7 @@ class MarketItem:
     base_api_url: str = "https://api.warframe.market/v1"  # Base URL for warframe.market API
     base_url: str = "warframe.market/items"  # Base URL for warframe.market items
     asset_url: str = "https://warframe.market/static/assets"  # Base URL for warframe.market assets
+    v2_base_api_url: str = "https://api.warframe.market/v2"  # Base URL for warframe.market v2 API
 
     def __init__(self, database: "MarketDatabase",
                  item_id: str, item_name: str, item_type: str, item_url_name: str, thumb: str, max_rank: str,
@@ -243,12 +244,12 @@ class MarketItem:
         users = {}
 
         for order in orders:
-            order_type = order['order_type']
+            order_type = order['type']
             user = order['user']
-            users[user['id']] = user['ingame_name']
+            users[user['id']] = user['ingameName']
 
             parsed_order = {
-                'last_update': order['last_update'],
+                'last_update': order['updatedAt'],
                 'quantity': order['quantity'],
                 'price': order['platinum'],
                 'user': user['ingame_name'],
@@ -258,7 +259,7 @@ class MarketItem:
             if 'subtype' in order:
                 parsed_order['subtype'] = order['subtype']
 
-            if 'mod_rank' in order:
+            if 'rank' in order:
                 parsed_order['subtype'] = f"R{order['mod_rank']}"
 
             self.orders[order_type].append(parsed_order)
@@ -279,13 +280,13 @@ class MarketItem:
         async with cache_manager() as cache, session_manager() as session:
             orders = await fetch_api_data(cache=cache,
                                           session=session,
-                                          url=f"{self.base_api_url}/items/{self.item_url_name}/orders",
+                                          url=f"{self.v2_base_api_url}/orders/item/{self.item_url_name}",
                                           headers=get_wfm_headers(platform=self.platform),
                                           expiration=20)
             if orders is None:
                 return
 
-            await self.parse_orders(orders['payload']['orders'])
+            await self.parse_orders(orders['data'])
 
     def get_parts(self) -> None:
         """
