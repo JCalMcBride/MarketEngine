@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timedelta
 
 from typing import Dict, List, Any, Optional, Tuple, Union
@@ -426,9 +427,32 @@ class MarketDatabase:
         :param platform: the platform to fetch data for
         :return: a dictionary mapping item names to their last average price
         """
-        results = self.execute_query(self._GET_LAST_AVERAGE_PRICES_QUERY, platform, fetch='all')
-        return {item_name.lower(): float(price) for item_name, price in results}
+        cache_file = os.path.join(os.path.dirname(__file__), f"price_cache_{platform}.json")
 
+        # Check if we have a recent cache (less than 1 hour old)
+        if os.path.exists(cache_file):
+            cache_mtime = os.path.getmtime(cache_file)
+            if (time.time() - cache_mtime) < 3600:  # 1 hour in seconds
+                try:
+                    with open(cache_file, 'r') as f:
+                        logger.info(f"Loading item prices from cache for {platform}")
+                        return json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    logger.warning("Failed to load price cache, rebuilding...")
+
+        # Cache doesn't exist or is too old, build it from database
+        logger.info(f"Building item price cache for {platform}")
+        results = self.execute_query(self._GET_LAST_AVERAGE_PRICES_QUERY, platform, fetch='all')
+        price_dict = {item_name.lower(): float(price) for item_name, price in results}
+
+        # Save the cache for next time
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(price_dict, f)
+        except IOError:
+            logger.warning("Failed to write price cache")
+
+        return price_dict
     def execute_query(self, query: str, *params, fetch: str = 'all',
                       commit: bool = False, many: bool = False) -> Union[Tuple, List[Tuple], None]:
         """
@@ -621,13 +645,13 @@ class MarketDatabase:
 
         batch_size = 10_000
         total_batches = (len(values) + batch_size - 1) // batch_size
-
-        with self.connection.cursor() as cursor:
-            for i in range(0, len(values), batch_size):
-                batch_values = values[i:i + batch_size]
-                cursor.executemany(insert_query, batch_values)
-                logger.info(f"Progress: Batch {i // batch_size + 1} of {total_batches} completed")
-            self.connection.commit()
+        with self.pool1.get_connection(pre_ping=True) as con1:
+            with con1.cursor() as cursor:
+                for i in range(0, len(values), batch_size):
+                    batch_values = values[i:i + batch_size]
+                    cursor.executemany(insert_query, batch_values)
+                    logger.info(f"Progress: Batch {i // batch_size + 1} of {total_batches} completed")
+                con1.commit()
 
     def get_most_recent_statistic_date(self, platform: str = 'pc') -> Optional[datetime]:
         """
@@ -729,22 +753,28 @@ class MarketDatabase:
         """
         return self.execute_query(self._GET_ITEM_VOLUME_QUERY, days, item_id, platform, fetch='all')
 
-    def get_item_price_history(self, item_ids: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
+    def get_item_price_history(self, item_ids: List[str], platform: str = 'pc') -> Dict[str, Dict[datetime, float]]:
         """
-        Gets item price history from the database
-        :param item_id: the item to get price history for
+        Gets item price history from the database for multiple items.
+        :param item_ids: list of item IDs to fetch price history for
         :param platform: the platform to fetch data for
-        :return: the item price history
+        :return: { item_id: { datetime: avg_price } }
         """
+        if not item_ids:
+            return {}
+
         placeholders = ','.join(['%s'] * len(item_ids))
         query = self._GET_PRICE_HISTORY_QUERY.format(placeholders)
+
+        print(f"Executing query: {query} with params: {item_ids + [platform]}")
+
         results = self.execute_query(query, *item_ids, platform, fetch='all')
 
-        price_history = {}
-        for item_id, datetime, avg_price in results:
-            if item_id not in price_history:
-                price_history[item_id] = {}
-            price_history[item_id][datetime] = avg_price
+        price_history: Dict[str, Dict[datetime, float]] = {}
+        for item_id, dt, avg_price in results:
+            item_hist = price_history.setdefault(item_id, {})
+            # Overwrite if multiple rows per day; ORDER BY datetime means "latest" wins as we iterate
+            item_hist[dt] = float(avg_price) if avg_price is not None else 0.0
 
         return price_history
 
@@ -954,39 +984,54 @@ class MarketDatabase:
 
         return statistics_dict
 
-    def get_price_history_dicts(self, item_names: List[str], platform: str = 'pc') -> Dict[str, Dict[str, str]]:
+    def get_price_history_dicts(self, item_names: List[str], platform: str = 'pc') -> Dict[str, Dict[str, float]]:
         """
-        Gets price history dictionaries for a list of item names
-        :param item_names: the list of item names to get price history for
+        Builds a date -> { item_name -> price } dictionary for the given item names.
+        Fetches all items at once for efficiency.
+        :param item_names: list of canonical item names
         :param platform: the platform to fetch data for
-        :return: a dictionary mapping dates to dictionaries of item prices
+        :return: { 'YYYY-MM-DD': { 'Item A': price, 'Item B': price, ... } }
         """
-        # Create a dictionary mapping item names to item IDs
-        item_id_dict = {item['item_name']: item['id'] for item in self.all_items}
+        if not item_names:
+            return {}
 
-        # Initialize price histories dictionary
-        price_histories = {}
+        # Map names -> ids (only keep items we can resolve)
+        name_to_id = {item['item_name']: item['id'] for item in self.all_items}
+        selected = [(name, name_to_id[name]) for name in item_names if name in name_to_id]
+        if not selected:
+            return {}
 
-        # Get unique dates from price histories of all items
-        dates = set()
-        for item_name in item_names:
-            if item_name in item_id_dict:
-                item_id = item_id_dict[item_name]
-                price_history = self.get_item_price_history(item_id, platform)
-                dates.update(price_history.keys())
+        item_ids = [iid for _, iid in selected]
+        id_to_name = {iid: name for name, iid in selected}
 
-        dates = sorted(dates)
+        # One DB call for all histories
+        histories_by_item = self.get_item_price_history(item_ids, platform)  # {item_id: {datetime: price}}
 
-        # Initialize price histories for each date
-        for date in dates:
-            price_histories[date] = {item_name: 0 for item_name in item_names}
+        # Collect all datetimes across items
+        all_datetimes = set()
+        for per_item in histories_by_item.values():
+            all_datetimes.update(per_item.keys())
 
-        # Populate price histories with available prices
-        for item_name in item_names:
-            if item_name in item_id_dict:
-                item_id = item_id_dict[item_name]
-                price_history = self.get_item_price_history(item_id, platform)
-                for date, price in price_history.items():
-                    price_histories[date][item_name] = float(price)
+        # Sort and normalize keys to 'YYYY-MM-DD'
+        sorted_datetimes = sorted(all_datetimes)
+        result: Dict[str, Dict[str, float]] = {}
 
-        return price_histories
+        # Initialize each date row with zeros for all requested items
+        for dt in sorted_datetimes:
+            date_key = dt.strftime('%Y-%m-%d')
+            result[date_key] = {name: 0.0 for name, _ in selected}
+
+        # Fill prices where available
+        for item_id, per_item in histories_by_item.items():
+            name = id_to_name.get(item_id)
+            if not name:
+                continue
+            # Because the SQL is ORDER BY datetime, later entries (same day) overwrite earlier ones
+            for dt, price in per_item.items():
+                date_key = dt.strftime('%Y-%m-%d')
+                # Guard in case a datetime wasn't in all_datetimes for some reason
+                if date_key not in result:
+                    result[date_key] = {n: 0.0 for n, _ in selected}
+                result[date_key][name] = float(price) if price is not None else 0.0
+
+        return result

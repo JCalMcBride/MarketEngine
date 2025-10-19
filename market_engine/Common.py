@@ -156,8 +156,13 @@ async def fetch_api_data(session: aiohttp.ClientSession,
             if rate_limiter is not None:
                 await rate_limiter.acquire()
 
+            headers['User-Agent'] = 'MarketEngine'
+
             async with session.get(url, headers=headers) as res:
                 if res.status == 404:
+                    return None
+
+                if res.status == 403:
                     return None
 
                 res.raise_for_status()
